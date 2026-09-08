@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+pydantic
+requests
+psycopg2-binary
+pytz
+python-jose[cryptography]
+PyJWT
+passlib[bcrypt]==1.7.4
+bcrypt==3.2.2
+httpx>=0.20.0
