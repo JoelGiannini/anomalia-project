@@ -1,0 +1,54 @@
+---
+- name: Verificar si existe un docker-compose.yml previo en el servidor
+  ansible.builtin.stat:
+    path: "/opt/anomalia/backend/docker-compose.yml"
+  register: compose_file
+
+- name: Bajar el stack de contenedores previo si existe
+  ansible.builtin.command: docker-compose down --remove-orphans
+  args:
+    chdir: "/opt/anomalia/backend"
+  when: compose_file.stat.exists
+  failed_when: false
+  ignore_errors: true
+
+- name: Crear directorio de despliegue para el backend en el nodo
+  ansible.builtin.file:
+    path: "/opt/anomalia/backend"
+    state: directory
+    mode: '0755'
+
+- name: Crear directorio general de despliegue para la base de datos
+  ansible.builtin.file:
+    path: "/opt/anomalia/database"
+    state: directory
+    mode: '0755'
+
+- name: Renderizar plantilla de inicialización de base de datos con nodos del inventario
+  ansible.builtin.template:
+    src: "init.sql.j2"
+    dest: "/opt/anomalia/database/init.sql"
+    mode: '0644'
+
+- name: Copiar código fuente del backend
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../backend"
+    dest: "/opt/anomalia/backend/"
+    remote_src: no
+
+- name: Copiar plantilla de Docker Compose con integración de Pyroscope
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "/opt/anomalia/backend/docker-compose.yml"
+    mode: '0644'
+
+- name: Reconstruir y levantar stack de contenedores con Docker Compose
+  ansible.builtin.shell: docker-compose up -d --build --force-recreate
+  args:
+    chdir: "/opt/anomalia/backend"
+  environment:
+    PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/usr/bin"
+  register: result
+  until: result.rc == 0
+  retries: 3
+  delay: 10

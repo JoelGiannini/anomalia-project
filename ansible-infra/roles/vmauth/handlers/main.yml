@@ -1,0 +1,7 @@
+---
+- name: Recargar systemd y reiniciar vmauth
+  systemd:
+    daemon_reload: yes
+    name: anomalia-vmauth
+    state: restarted
+    enabled: yes

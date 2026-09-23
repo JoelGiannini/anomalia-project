@@ -1,0 +1,27 @@
+---
+- name: Crear directorios de almacenamiento para Anomalia Traces
+  file:
+    path: "{{ vtstorage_path }}"
+    state: directory
+    mode: '0755'
+
+- name: Copiar servicio systemd de anomalia vtstorage
+  template:
+    src: vtstorage.service.j2
+    dest: /etc/systemd/system/anomalia-vtstorage.service
+    mode: '0644'
+  notify: Recargar systemd y reiniciar vtstorage
+
+- name: Copiar servicio systemd de anomalia vtinsert
+  template:
+    src: vtinsert.service.j2
+    dest: /etc/systemd/system/anomalia-vtinsert.service
+    mode: '0644'
+  notify: Recargar systemd y reiniciar vtinsert
+
+- name: Copiar servicio systemd de anomalia vtselect
+  template:
+    src: vtselect.service.j2
+    dest: /etc/systemd/system/anomalia-vtselect.service
+    mode: '0644'
+  notify: Recargar systemd y reiniciar vtselect

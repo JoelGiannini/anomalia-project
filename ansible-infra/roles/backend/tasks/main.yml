@@ -1,0 +1,82 @@
+---
+- name: Verificar si existe un docker-compose.yml previo en el servidor
+  ansible.builtin.stat:
+    path: "/opt/anomalia/backend/docker-compose.yml"
+  register: compose_file
+
+- name: Bajar el stack de contenedores previo y eliminar volúmenes si es necesario
+  ansible.builtin.command: docker-compose down -v --remove-orphans
+  args:
+    chdir: "/opt/anomalia/backend"
+  when: compose_file.stat.exists
+  failed_when: false
+  ignore_errors: true
+
+- name: Crear directorio de despliegue para el backend en el nodo
+  ansible.builtin.file:
+    path: "/opt/anomalia/backend"
+    state: directory
+    mode: '0755'
+
+- name: Crear subdirectorio local para la base de datos
+  ansible.builtin.file:
+    path: "/opt/anomalia/backend/database"
+    state: directory
+    mode: '0755'
+
+# NUEVO: Comprobar si init.sql quedó creado como directorio por error y limpiarlo
+- name: Verificar si init.sql es un directorio por error previo
+  ansible.builtin.stat:
+    path: "/opt/anomalia/backend/database/init.sql"
+  register: init_sql_stat
+
+- name: Eliminar init.sql si por error es un directorio
+  ansible.builtin.file:
+    path: "/opt/anomalia/backend/database/init.sql"
+    state: absent
+  when: init_sql_stat.stat.isdir is defined and init_sql_stat.stat.isdir
+
+- name: Renderizar plantilla de inicialización de base de datos
+  ansible.builtin.template:
+    src: "init.sql.j2"
+    dest: "/opt/anomalia/backend/database/init.sql"
+    mode: '0644'
+
+- name: Copiar código fuente del backend y archivos del frontend
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../backend/"
+    dest: "/opt/anomalia/backend/"
+    remote_src: no
+
+- name: Copiar plantilla de Docker Compose con integración de Pyroscope
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "/opt/anomalia/backend/docker-compose.yml"
+    mode: '0644'
+
+- name: Crear directorio para playbooks adicionales en el nodo
+  ansible.builtin.file:
+    path: "/opt/anomalia/backend/playbooks"
+    state: directory
+    mode: '0755'
+
+- name: Copiar playbooks de despliegue e instalación al servidor
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/opt/anomalia/backend/playbooks/"
+    mode: '0644'
+  loop:
+    - "deploy-infra.yml"
+    - "install-binaries.yml"
+
+- name: Reconstruir y levantar stack de contenedores con Docker Compose
+  ansible.builtin.shell: docker-compose up -d --build
+  args:
+    chdir: "/opt/anomalia/backend"
+  environment:
+    PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/usr/bin"
+  register: result
+  until: result.rc == 0
+  retries: 3
+  delay: 10
+

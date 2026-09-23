@@ -1,0 +1,20 @@
+---
+- name: Crear directorio de configuración para vmalert
+  file:
+    path: /etc/anomalia/vmalert
+    state: directory
+    mode: '0755'
+
+- name: Copiar reglas de alertas básicas
+  template:
+    src: alert_rules.yml.j2
+    dest: /etc/anomalia/vmalert/alert_rules.yml
+    mode: '0644'
+  notify: Recargar systemd y reiniciar vmalert
+
+- name: Copiar servicio systemd para vmalert
+  template:
+    src: vmalert.service.j2
+    dest: /etc/systemd/system/anomalia-vmalert.service
+    mode: '0644'
+  notify: Recargar systemd y reiniciar vmalert

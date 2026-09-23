@@ -1,0 +1,148 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+{% if groups.get('vm_storage_nodes', []) | length > 0 %}
+  - job_name: 'vm-storage'
+    scheme: http
+    static_configs:
+      - targets:
+{% for host in groups['vm_storage_nodes'] %}
+          - '{{ hostvars[host].vmstorage_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vmstorage_port | default("8402") }}'
+{% endfor %}
+{% endif %}
+{% if groups.get('vm_insert_nodes', []) | length > 0 %}
+  - job_name: 'vm-insert'
+    scheme: http
+    static_configs:
+      - targets:
+{% for host in groups['vm_insert_nodes'] %}
+          - '{{ hostvars[host].vminsert_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vminsert_port | default("8400") }}'
+{% endfor %}
+{% endif %}
+{% if groups.get('vm_select_nodes', []) | length > 0 %}
+  - job_name: 'vm-select'
+    scheme: http
+    static_configs:
+      - targets:
+{% for host in groups['vm_select_nodes'] %}
+          - '{{ hostvars[host].vmselect_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vmselect_port | default("8401") }}'
+{% endfor %}
+{% endif %}
+{% if groups.get('vlogs_storage_nodes', []) | length > 0 %}
+  - job_name: 'vlogs-storage'
+    scheme: http
+    static_configs:
+      - targets:
+{% for host in groups['vlogs_storage_nodes'] %}
+          - '{{ hostvars[host].vlstorage_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vlstorage_port | default("8482") }}'
+{% endfor %}
+{% endif %}
+{% if groups.get('vlogs_insert_nodes', []) | length > 0 %}
+  - job_name: 'vlogs-insert'
+    scheme: http
+    static_configs:
+      - targets:
+{% for host in groups['vlogs_insert_nodes'] %}
+          - '{{ hostvars[host].vlinsert_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vlinsert_port | default("8480") }}'
+{% endfor %}
+{% endif %}
+{% if groups.get('vlogs_select_nodes', []) | length > 0 %}
+  - job_name: 'vlogs-select'
+    scheme: http
+    static_configs:
+      - targets:
+{% for host in groups['vlogs_select_nodes'] %}
+          - '{{ hostvars[host].vlselect_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vlselect_port | default("8481") }}'
+{% endfor %}
+{% endif %}
+{% if groups.get('vt_storage_nodes', []) | length > 0 %}
+  - job_name: 'vt-storage'
+    scheme: http
+    static_configs:
+      - targets:
+{% for host in groups['vt_storage_nodes'] %}
+          - '{{ hostvars[host].vtstorage_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vtstorage_port | default("8492") }}'
+{% endfor %}
+{% endif %}
+{% if groups.get('vt_insert_nodes', []) | length > 0 %}
+  - job_name: 'vt-insert'
+    scheme: http
+    static_configs:
+      - targets:
+{% for host in groups['vt_insert_nodes'] %}
+          - '{{ hostvars[host].vtinsert_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vtinsert_port | default("8490") }}'
+{% endfor %}
+{% endif %}
+{% if groups.get('vt_select_nodes', []) | length > 0 %}
+  - job_name: 'vt-select'
+    scheme: http
+    static_configs:
+      - targets:
+{% for host in groups['vt_select_nodes'] %}
+          - '{{ hostvars[host].vtselect_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vtselect_port | default("8491") }}'
+{% endfor %}
+{% endif %}
+{% if groups.get('pyroscope_nodes', []) | length > 0 %}
+  - job_name: 'pyroscope'
+    scheme: http
+    static_configs:
+      - targets:
+{% for host in groups['pyroscope_nodes'] %}
+          - '{{ hostvars[host].pyroscope_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].pyroscope_port | default("4040") }}'
+{% endfor %}
+{% endif %}
+{% if groups.get('vmauth_nodes', []) | length > 0 %}
+  - job_name: 'vmauth'
+    scheme: http
+    static_configs:
+      - targets:
+{% for host in groups['vmauth_nodes'] %}
+          - '{{ hostvars[host].vmauth_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vmauth_server_port | default("8427") }}'
+{% endfor %}
+{% endif %}
+{% if groups.get('vmagent_nodes', []) | length > 0 %}
+  - job_name: 'vmagent'
+    scheme: http
+    static_configs:
+      - targets:
+{% for host in groups['vmagent_nodes'] %}
+          - '{{ hostvars[host].vmagent_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vmagent_port | default("8429") }}'
+{% endfor %}
+{% endif %}
+{% if groups.get('alertmanager_nodes', []) | length > 0 %}
+  - job_name: 'alertmanager'
+    scheme: http
+    static_configs:
+      - targets:
+{% for host in groups['alertmanager_nodes'] %}
+          - '{{ hostvars[host].alertmanager_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].alertmanager_port | default("9093") }}'
+{% endfor %}
+{% endif %}
+{% if groups.get('vmalert_nodes', []) | length > 0 %}
+  - job_name: 'vmalert'
+    scheme: http
+    static_configs:
+      - targets:
+{% for host in groups['vmalert_nodes'] %}
+          - '{{ hostvars[host].vmalert_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vmalert_port | default("8880") }}'
+{% endfor %}
+{% endif %}
+{% if groups.get('backend_nodes', []) | length > 0 %}
+  - job_name: 'anomalia-backend'
+    scheme: http
+    static_configs:
+      - targets:
+{% for host in groups['backend_nodes'] %}
+          - '{{ hostvars[host].backend_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:8000'
+{% endfor %}
+{% endif %}
+{% if groups.get('parser_nodes', []) | length > 0 %}
+  - job_name: 'parser-service'
+    scheme: http
+    static_configs:
+      - targets:
+{% for host in groups['parser_nodes'] %}
+          - '{{ hostvars[host].parser_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:8090'
+{% endfor %}
+{% endif %}

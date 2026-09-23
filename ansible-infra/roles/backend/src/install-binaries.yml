@@ -1,0 +1,397 @@
+---
+- name: Descargar, instalar y actualizar el stack completo de Anomalia
+  hosts: all
+  become: yes
+  vars:
+    tmp_dir: "/tmp/anomalia-binaries"
+    # Flag para controlar si se gestionan (enable/restart) los servicios de systemd. 
+    # Por defecto está en false, se activa pasando: -e "gestionar_servicios=true"
+    gestionar_servicios: false
+
+    victorialogs_version: "latest"
+    victoriametrics_version: "latest"
+    victoriatraces_version: "latest"
+    pyroscope_version: "latest"
+    alertmanager_version: "latest"
+
+  tasks:
+    - name: Crear directorio temporal de descarga
+      file:
+        path: "{{ tmp_dir }}"
+        state: directory
+        mode: '0755'
+      run_once: yes
+
+    # ==========================================
+    # 1. VICTORIALOGS (vlstorage, vlinsert, vlselect)
+    # ==========================================
+    - block:
+        - name: Consultar release de VictoriaLogs
+          ansible.builtin.uri:
+            url: "{{ 'https://api.github.com/repos/VictoriaMetrics/VictoriaLogs/releases/latest' if victorialogs_version == 'latest' else 'https://api.github.com/repos/VictoriaMetrics/VictoriaLogs/releases/tags/' + victorialogs_version }}"
+            return_content: yes
+            method: GET
+            status_code: 200
+            body_format: json
+          register: vlogs_release
+
+        - name: Extraer URL de descarga para VictoriaLogs
+          set_fact:
+            vlogs_download_url: "{{ item.browser_download_url }}"
+          loop: "{{ vlogs_release.json.assets }}"
+          when: 
+            - item.name is match("victoria-logs-linux-amd64-.*\\.tar\\.gz$")
+            - item.name is not search("enterprise")
+
+        - name: Descargar tarball de VictoriaLogs
+          get_url:
+            url: "{{ vlogs_download_url }}"
+            dest: "{{ tmp_dir }}/victorialogs.tar.gz"
+
+        - name: Extraer binarios de VictoriaLogs
+          unarchive:
+            src: "{{ tmp_dir }}/victorialogs.tar.gz"
+            dest: "{{ tmp_dir }}"
+            remote_src: yes
+
+        - name: Copiar binarios de VictoriaLogs a /usr/local/bin
+          copy:
+            src: "{{ tmp_dir }}/victoria-logs-prod"
+            dest: "/usr/local/bin/{{ item.name }}"
+            mode: '0755'
+            remote_src: yes
+          loop:
+            - { name: 'vlstorage', group: 'vlogs_storage_nodes' }
+            - { name: 'vlinsert', group: 'vlogs_insert_nodes' }
+            - { name: 'vlselect', group: 'vlogs_select_nodes' }
+          when: >
+            (inventory_hostname in groups.get(item.group, [])) or
+            (servicio is defined and servicio == item.name)
+
+        - name: Habilitar y reiniciar servicios systemd de VictoriaLogs
+          systemd:
+            name: "anomalia-{{ item.name }}.service"
+            enabled: yes
+            state: restarted
+            daemon_reload: yes
+          loop:
+            - { name: 'vlstorage', group: 'vlogs_storage_nodes' }
+            - { name: 'vlinsert', group: 'vlogs_insert_nodes' }
+            - { name: 'vlselect', group: 'vlogs_select_nodes' }
+          when:
+            - gestionar_servicios | bool
+            - >
+              (inventory_hostname in groups.get(item.group, [])) or
+              (servicio is defined and servicio == item.name)
+      when: >
+        inventory_hostname in groups.get('vlogs_storage_nodes', []) or
+        inventory_hostname in groups.get('vlogs_insert_nodes', []) or
+        inventory_hostname in groups.get('vlogs_select_nodes', []) or
+        (servicio is defined and servicio in ['vlstorage', 'vlinsert', 'vlselect'])
+
+    # ==========================================
+    # 2. VICTORIAMETRICS CLUSTER (vmstorage, vminsert, vmselect)
+    # ==========================================
+    - block:
+        - name: Consultar release de VictoriaMetrics
+          ansible.builtin.uri:
+            url: "{{ 'https://api.github.com/repos/VictoriaMetrics/VictoriaMetrics/releases/latest' if victoriametrics_version == 'latest' else 'https://api.github.com/repos/VictoriaMetrics/VictoriaMetrics/releases/tags/' + victoriametrics_version }}"
+            return_content: yes
+            method: GET
+            status_code: 200
+            body_format: json
+          register: vm_release
+
+        - name: Extraer URL de descarga para VictoriaMetrics Cluster
+          set_fact:
+            vmcluster_download_url: "{{ item.browser_download_url }}"
+          loop: "{{ vm_release.json.assets }}"
+          when: 
+            - item.name is match("victoria-metrics-linux-amd64-.*-cluster\\.tar\\.gz$")
+            - item.name is not search("enterprise")
+
+        - name: Descargar tarball de VictoriaMetrics Cluster
+          get_url:
+            url: "{{ vmcluster_download_url }}"
+            dest: "{{ tmp_dir }}/vmcluster.tar.gz"
+
+        - name: Extraer binarios de VictoriaMetrics Cluster
+          unarchive:
+            src: "{{ tmp_dir }}/vmcluster.tar.gz"
+            dest: "{{ tmp_dir }}"
+            remote_src: yes
+
+        - name: Copiar binarios del Cluster de VictoriaMetrics a /usr/local/bin
+          copy:
+            src: "{{ tmp_dir }}/{{ item.src }}"
+            dest: "/usr/local/bin/{{ item.dest }}"
+            mode: '0755'
+            remote_src: yes
+          loop:
+            - { src: 'vmstorage-prod', dest: 'vmstorage', group: 'vm_storage_nodes' }
+            - { src: 'vminsert-prod', dest: 'vminsert', group: 'vm_insert_nodes' }
+            - { src: 'vmselect-prod', dest: 'vmselect', group: 'vm_select_nodes' }
+          when: >
+            (inventory_hostname in groups.get(item.group, [])) or
+            (servicio is defined and servicio == item.dest)
+
+        - name: Habilitar y reiniciar servicios systemd de VictoriaMetrics
+          systemd:
+            name: "anomalia-{{ item.dest }}.service"
+            enabled: yes
+            state: restarted
+            daemon_reload: yes
+          loop:
+            - { dest: 'vmstorage', group: 'vm_storage_nodes' }
+            - { dest: 'vminsert', group: 'vm_insert_nodes' }
+            - { dest: 'vmselect', group: 'vm_select_nodes' }
+          when:
+            - gestionar_servicios | bool
+            - >
+              (inventory_hostname in groups.get(item.group, [])) or
+              (servicio is defined and servicio == item.dest)
+      when: >
+        inventory_hostname in groups.get('vm_storage_nodes', []) or
+        inventory_hostname in groups.get('vm_insert_nodes', []) or
+        inventory_hostname in groups.get('vm_select_nodes', []) or
+        (servicio is defined and servicio in ['vmstorage', 'vminsert', 'vmselect'])
+
+    # ==========================================
+    # 3. VICTORIATRACES (vtstorage, vtinsert, vtselect)
+    # ==========================================
+    - block:
+        - name: Consultar release de VictoriaTraces
+          ansible.builtin.uri:
+            url: "{{ 'https://api.github.com/repos/VictoriaMetrics/VictoriaTraces/releases/latest' if victoriatraces_version == 'latest' else 'https://api.github.com/repos/VictoriaMetrics/VictoriaTraces/releases/tags/' + victoriatraces_version }}"
+            return_content: yes
+            method: GET
+            status_code: 200
+            body_format: json
+          register: vt_release
+
+        - name: Extraer URL de descarga para VictoriaTraces
+          set_fact:
+            vtcluster_download_url: "{{ item.browser_download_url }}"
+          loop: "{{ vt_release.json.assets }}"
+          when: 
+            - item.name is match("victoria-traces-linux-amd64-.*\\.tar\\.gz$")
+            - item.name is not search("enterprise")
+
+        - name: Descargar tarball de VictoriaTraces
+          get_url:
+            url: "{{ vtcluster_download_url }}"
+            dest: "{{ tmp_dir }}/vtcluster.tar.gz"
+
+        - name: Extraer binarios de VictoriaTraces
+          unarchive:
+            src: "{{ tmp_dir }}/vtcluster.tar.gz"
+            dest: "{{ tmp_dir }}"
+            remote_src: yes
+
+        - name: Copiar binarios de VictoriaTraces a /usr/local/bin
+          copy:
+            src: "{{ tmp_dir }}/victoria-traces-prod"
+            dest: "/usr/local/bin/{{ item.name }}"
+            mode: '0755'
+            remote_src: yes
+          loop:
+            - { name: 'vtstorage', group: 'vt_storage_nodes' }
+            - { name: 'vtinsert', group: 'vt_insert_nodes' }
+            - { name: 'vtselect', group: 'vt_select_nodes' }
+          when: >
+            (inventory_hostname in groups.get(item.group, [])) or
+            (servicio is defined and servicio == item.name)
+
+        - name: Habilitar y reiniciar servicios systemd de VictoriaTraces
+          systemd:
+            name: "anomalia-{{ item.name }}.service"
+            enabled: yes
+            state: restarted
+            daemon_reload: yes
+          loop:
+            - { name: 'vtstorage', group: 'vt_storage_nodes' }
+            - { name: 'vtinsert', group: 'vt_insert_nodes' }
+            - { name: 'vtselect', group: 'vt_select_nodes' }
+          when:
+            - gestionar_servicios | bool
+            - >
+              (inventory_hostname in groups.get(item.group, [])) or
+              (servicio is defined and servicio == item.name)
+      when: >
+        inventory_hostname in groups.get('vt_storage_nodes', []) or
+        inventory_hostname in groups.get('vt_insert_nodes', []) or
+        inventory_hostname in groups.get('vt_select_nodes', []) or
+        (servicio is defined and servicio in ['vtstorage', 'vtinsert', 'vtselect'])
+
+    # ==========================================
+    # 4. VMUTILS (vmagent, vmauth, vmalert)
+    # ==========================================
+    - block:
+        - name: Consultar release de VictoriaMetrics para vmutils
+          ansible.builtin.uri:
+            url: "{{ 'https://api.github.com/repos/VictoriaMetrics/VictoriaMetrics/releases/latest' if victoriametrics_version == 'latest' else 'https://api.github.com/repos/VictoriaMetrics/VictoriaMetrics/releases/tags/' + victoriametrics_version }}"
+            return_content: yes
+            method: GET
+            status_code: 200
+            body_format: json
+          register: vmutils_release
+
+        - name: Extraer URL de descarga para vmutils
+          set_fact:
+            vmutils_download_url: "{{ item.browser_download_url }}"
+          loop: "{{ vmutils_release.json.assets }}"
+          when: 
+            - item.name is match("vmutils-linux-amd64-.*\\.tar\\.gz$")
+            - item.name is not search("enterprise")
+
+        - name: Descargar tarball de vmutils
+          get_url:
+            url: "{{ vmutils_download_url }}"
+            dest: "{{ tmp_dir }}/vmutils.tar.gz"
+
+        - name: Extraer binarios de vmutils
+          unarchive:
+            src: "{{ tmp_dir }}/vmutils.tar.gz"
+            dest: "{{ tmp_dir }}"
+            remote_src: yes
+
+        - name: Copiar binarios de vmutils a /usr/local/bin
+          copy:
+            src: "{{ tmp_dir }}/{{ item.src }}"
+            dest: "/usr/local/bin/{{ item.dest }}"
+            mode: '0755'
+            remote_src: yes
+          loop:
+            - { src: 'vmagent-prod', dest: 'vmagent', group: 'vmagent_nodes' }
+            - { src: 'vmauth-prod', dest: 'vmauth', group: 'vmauth_nodes' }
+            - { src: 'vmalert-prod', dest: 'vmalert', group: 'vmalert_nodes' }
+          when: >
+            (inventory_hostname in groups.get(item.group, [])) or
+            (servicio is defined and servicio == item.dest)
+
+        - name: Habilitar y reiniciar servicios systemd de vmutils
+          systemd:
+            name: "anomalia-{{ item.dest }}.service"
+            enabled: yes
+            state: restarted
+            daemon_reload: yes
+          loop:
+            - { dest: 'vmagent', group: 'vmagent_nodes' }
+            - { dest: 'vmauth', group: 'vmauth_nodes' }
+            - { dest: 'vmalert', group: 'vmalert_nodes' }
+          when:
+            - gestionar_servicios | bool
+            - >
+              (inventory_hostname in groups.get(item.group, [])) or
+              (servicio is defined and servicio == item.dest)
+      when: >
+        inventory_hostname in groups.get('vmagent_nodes', []) or
+        inventory_hostname in groups.get('vmauth_nodes', []) or
+        inventory_hostname in groups.get('vmalert_nodes', []) or
+        (servicio is defined and servicio in ['vmagent', 'vmauth', 'vmalert'])
+
+    # ==========================================
+    # 5. PYROSCOPE
+    # ==========================================
+    - block:
+        - name: Consultar release de Pyroscope
+          ansible.builtin.uri:
+            url: "{{ 'https://api.github.com/repos/grafana/pyroscope/releases/latest' if pyroscope_version == 'latest' else 'https://api.github.com/repos/grafana/pyroscope/releases/tags/' + pyroscope_version }}"
+            return_content: yes
+            method: GET
+            status_code: 200
+            body_format: json
+          register: pyroscope_release
+
+        - name: Extraer URL de descarga para Pyroscope Linux amd64
+          set_fact:
+            pyroscope_download_url: "{{ item.browser_download_url }}"
+          loop: "{{ pyroscope_release.json.assets }}"
+          when: item.name is match("pyroscope_.*_linux_amd64\\.tar\\.gz$")
+
+        - name: Descargar tarball de Pyroscope
+          get_url:
+            url: "{{ pyroscope_download_url }}"
+            dest: "{{ tmp_dir }}/pyroscope.tar.gz"
+
+        - name: Extraer Pyroscope
+          unarchive:
+            src: "{{ tmp_dir }}/pyroscope.tar.gz"
+            dest: "{{ tmp_dir }}"
+            remote_src: yes
+
+        - name: Instalar binario de Pyroscope en /usr/local/bin
+          copy:
+            src: "{{ tmp_dir }}/pyroscope"
+            dest: "/usr/local/bin/pyroscope"
+            mode: '0755'
+            remote_src: yes
+
+        - name: Habilitar y reiniciar servicio systemd de Pyroscope
+          systemd:
+            name: "anomalia-pyroscope.service"
+            enabled: yes
+            state: restarted
+            daemon_reload: yes
+          when: gestionar_servicios | bool
+      when: >
+        inventory_hostname in groups.get('pyroscope_nodes', []) or
+        (servicio is defined and servicio == 'pyroscope')
+
+    # ==========================================
+    # 6. ALERTMANAGER
+    # ==========================================
+    - block:
+        - name: Consultar release de Alertmanager
+          ansible.builtin.uri:
+            url: "{{ 'https://api.github.com/repos/prometheus/alertmanager/releases/latest' if alertmanager_version == 'latest' else 'https://api.github.com/repos/prometheus/alertmanager/releases/tags/' + alertmanager_version }}"
+            return_content: yes
+            method: GET
+            status_code: 200
+            body_format: json
+          register: alertmanager_release
+
+        - name: Extraer URL de descarga para Alertmanager Linux amd64
+          set_fact:
+            alertmanager_download_url: "{{ item.browser_download_url }}"
+            alertmanager_folder_name: "{{ item.name | regex_replace('\\.tar\\.gz$', '') }}"
+          loop: "{{ alertmanager_release.json.assets }}"
+          when: item.name is match("alertmanager-.*\\.linux-amd64\\.tar\\.gz$")
+
+        - name: Descargar tarball de Alertmanager
+          get_url:
+            url: "{{ alertmanager_download_url }}"
+            dest: "{{ tmp_dir }}/alertmanager.tar.gz"
+
+        - name: Extraer Alertmanager
+          unarchive:
+            src: "{{ tmp_dir }}/alertmanager.tar.gz"
+            dest: "{{ tmp_dir }}"
+            remote_src: yes
+
+        - name: Instalar binario de Alertmanager en /usr/local/bin
+          copy:
+            src: "{{ tmp_dir }}/{{ alertmanager_folder_name }}/alertmanager"
+            dest: "/usr/local/bin/alertmanager"
+            mode: '0755'
+            remote_src: yes
+
+        - name: Habilitar y reiniciar servicio systemd de Alertmanager
+          systemd:
+            name: "anomalia-alertmanager.service"
+            enabled: yes
+            state: restarted
+            daemon_reload: yes
+          when: gestionar_servicios | bool
+      when: >
+        inventory_hostname in groups.get('alertmanager_nodes', []) or
+        (servicio is defined and servicio == 'alertmanager')
+
+    # ==========================================
+    # LIMPIEZA FINAL
+    # ==========================================
+    - name: Limpiar archivos temporales de descarga
+      file:
+        path: "{{ tmp_dir }}"
+        state: absent
+      run_once: yes

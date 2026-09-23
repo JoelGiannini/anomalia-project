@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Anomalía - Iniciar Sesión</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 flex items-center justify-center min-h-screen">
+    <div class="bg-slate-800 p-8 rounded-xl shadow-2xl w-full max-w-md border border-slate-700">
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-bold tracking-wider text-cyan-400">ANOMALÍA</h1>
+            <p class="text-sm text-slate-400 mt-2">Plataforma de Gestión de Alertas e IT</p>
+        </div>
+
+        <div id="error-alert" class="hidden bg-red-500/10 border border-red-500 text-red-400 px-4 py-3 rounded mb-6 text-sm"></div>
+
+        <form id="login-form" class="space-y-6">
+            <div>
+                <label class="block text-sm font-medium text-slate-300 mb-2">Usuario</label>
+                <input type="text" id="username" required 
+                    class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-slate-100 focus:outline-none focus:border-cyan-500 transition">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-slate-300 mb-2">Contraseña</label>
+                <input type="password" id="password" required 
+                    class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-slate-100 focus:outline-none focus:border-cyan-500 transition">
+            </div>
+            <button type="submit" 
+                class="w-full bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold py-3 rounded-lg transition shadow-lg shadow-cyan-600/20">
+                Entrar
+            </button>
+        </form>
+
+        <div id="oidc-container" class="mt-6 pt-6 border-t border-slate-700 text-center hidden">
+            <p class="text-xs text-slate-400 mb-4">O bien conéctate mediante identidad corporativa</p>
+            <button id="oidc-btn" 
+                class="w-full bg-slate-700 hover:bg-slate-600 text-slate-200 font-medium py-2.5 rounded-lg transition border border-slate-600 flex items-center justify-center gap-2">
+                <span>🔑 Acceder con Keycloak (OIDC)</span>
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // Verificar modo de autenticación al cargar
+        fetch('/api/v1/settings/auth')
+            .then(res => res.json())
+            .then(data => {
+                if (data.auth_mode === 'hybrid' || data.auth_mode === 'oidc_only') {
+                    document.getElementById('oidc-container').classList.remove('hidden');
+                }
+            });
+
+        // Manejo de Login Local (UI Web)
+        document.getElementById('login-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const errorAlert = document.getElementById('error-alert');
+
+            errorAlert.classList.add('hidden');
+
+            try {
+                const response = await fetch('/api/v1/auth/ui-login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Credenciales inválidas');
+                }
+
+                // Guardar token, roles y atributos de sesión en localStorage para persistencia completa
+                localStorage.setItem('access_token', data.access_token);
+                localStorage.setItem('username', data.username || username);
+                localStorage.setItem('roles', JSON.stringify(data.roles || ['viewer']));
+                localStorage.setItem('role', data.role || 'viewer');
+                if (data.tenants) {
+                    localStorage.setItem('tenants', JSON.stringify(data.tenants));
+                }
+
+                // Redirigir al index/dashboard
+                window.location.href = '/';
+            } catch (err) {
+                errorAlert.textContent = err.message;
+                errorAlert.classList.remove('hidden');
+            }
+        });
+
+        // Manejo de Botón OIDC
+        document.getElementById('oidc-btn').addEventListener('click', async () => {
+            try {
+                const res = await fetch('/api/v1/oidc/login');
+                const data = await res.json();
+                if (data.auth_url) {
+                    window.location.href = data.auth_url;
+                }
+            } catch (err) {
+                alert('No se pudo conectar con el servidor OIDC');
+            }
+        });
+    </script>
+</body>
+</html>

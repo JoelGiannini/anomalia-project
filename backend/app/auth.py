@@ -69,3 +69,30 @@ def verify_admin_token(credentials: HTTPAuthorizationCredentials = Security(secu
             status_code=401,
             detail="Token de administración inválido o expirado."
         )
+
+def verify_any_user_token(credentials: HTTPAuthorizationCredentials = Security(security)):
+    """Valida cualquier token JWT interno emitido, sin exigir un rol específico (para usuarios estándar/visores)."""
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except jwt.PyJWTError:
+        raise HTTPException(
+            status_code=401,
+            detail="Token de autenticación inválido o expirado."
+        )
+
+def get_current_user_profiles(payload: dict = Depends(verify_any_user_token)):
+    """Extrae y retorna los perfiles o datos de usuario del payload del token validado."""
+    try:
+        # Puedes ajustar los campos según cómo emitas los datos en tus tokens (ej. sub, preferred_username, roles, etc.)
+        return {
+            "username": payload.get("sub") or payload.get("username"),
+            "role": payload.get("role"),
+            "roles": payload.get("roles", [])
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No se pudieron extraer los perfiles del usuario: {str(e)}"
+        )

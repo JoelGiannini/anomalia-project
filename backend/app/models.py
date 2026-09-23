@@ -1,0 +1,68 @@
+from typing import Optional, List
+from pydantic import BaseModel, Field
+from sqlalchemy import Column, Integer, String, DateTime
+from datetime import datetime
+from app.database import Base
+
+# NOTA: La variable 'Base' se importa directamente desde app.database 
+# para mantener la compatibilidad con modelos SQLAlchemy si los requieres aquí,
+# evitando sobrescribirla o duplicarla.
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str = Field(..., repr=False)
+
+class UserCreateRequest(BaseModel):
+    username: str
+    password: str = Field(..., repr=False)
+    password_confirm: Optional[str] = Field(None, repr=False)
+    is_active: Optional[bool] = True
+    roles: Optional[List[str]] = ["viewer"]
+    tenants: Optional[List[str]] = []
+
+class UserUpdateRequest(BaseModel):
+    username: Optional[str] = None
+    is_active: Optional[bool] = None
+    roles: Optional[List[str]] = None
+    tenants: Optional[List[str]] = None
+    password: Optional[str] = Field(None, repr=False)
+    password_confirm: Optional[str] = Field(None, repr=False)
+
+class ThemeUpdateRequest(BaseModel):
+    theme: str
+    avatar_url: Optional[str] = None
+    password: Optional[str] = None
+
+class RoleCreateUpdatePayload(BaseModel):
+    name: str
+    description: Optional[str] = None
+    profiles: Optional[List[str]] = []
+    tenants: Optional[List[str]] = []
+
+class ProfileCreateUpdatePayload(BaseModel):
+    code: str
+    name: str
+    description: Optional[str] = None
+
+class TenantPayload(BaseModel):
+    name: str
+    type: Optional[str] = "metrics"
+    account_id: int
+    project_id: int
+    environment: Optional[str] = "default"
+    port: Optional[int] = 8427
+    description: Optional[str] = ""
+
+class AuthNodePayload(BaseModel):
+    name: Optional[str] = None
+    hostname: Optional[str] = None
+    host: Optional[str] = None
+    ip_address: Optional[str] = None
+    service_ip: Optional[str] = None
+    type: Optional[str] = None
+    component_type: Optional[str] = "vmagent"
+    port: Optional[int] = 80
+    environment: Optional[str] = "production"
+    status: Optional[str] = "operational"
+    is_active: Optional[bool] = True
+    description: Optional[str] = ""

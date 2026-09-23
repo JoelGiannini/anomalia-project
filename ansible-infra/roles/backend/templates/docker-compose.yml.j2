@@ -71,7 +71,7 @@ services:
     restart: unless-stopped
 
   anomaliagw:
-    build: ./backend
+    build: .
     container_name: anomalia_gw
     ports:
       - "80:8000"
@@ -82,6 +82,20 @@ services:
       - OLLAMA_HOST=http://anomalia_ollama:11434
       - OLLAMA_MODEL=llama3.2
       - OIDC_ISSUER_URL=http://anomalia.local:8080/realms/aiops
+      - PYROSCOPE_APPLICATION_NAME=anomalia_system
+      
+      # Endpoints limpios inyectados desde Ansible (defaults/main.yml)
+      - PYROSCOPE_SERVER_ADDRESS={{ backend_pyroscope_address }}
+      - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT={{ backend_otel_traces_endpoint }}
+      - OTEL_EXPORTER_OTLP_METRICS_ENDPOINT={{ backend_otel_metrics_endpoint }}
+      - AUDIT_LOGS_ENDPOINT={{ backend_audit_logs_endpoint }}
+    volumes:
+      - /opt/anomalia/backend:/opt/anomalia/backend
+      - /opt/anomalia/backend/media:/app/media
+    labels:
+      scrape: "true"
+      port: "8000"
+      path: "/metrics"
     extra_hosts:
       - "anomalia.local:host-gateway"
     depends_on:

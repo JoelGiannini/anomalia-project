@@ -1,0 +1,11 @@
+groups:
+  - name: anomalia-infra-alerts
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "El servicio { { $labels.job } } en { { $labels.instance } } está caído"
+          description: "La instancia ha dejado de responder al scraping de métricas por más de 1 minuto."

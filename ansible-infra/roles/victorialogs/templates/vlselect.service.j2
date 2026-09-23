@@ -1,0 +1,12 @@
+[Unit]
+Description=Anomalia VictoriaLogs Select Service
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/vlselect -httpListenAddr={{ vlselect_ip | default(ansible_host) | default('127.0.0.1') }}:{{ vlselect_port | default('8481') }} {%- for host in groups['vlogs_storage_nodes'] %} -storageNode={{ hostvars[host].vlstorage_ip | default(hostvars[host].ansible_host) | default('127.0.0.1') }}:{{ hostvars[host].vlstorage_port | default('8482') }}{% endfor %}
+
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target

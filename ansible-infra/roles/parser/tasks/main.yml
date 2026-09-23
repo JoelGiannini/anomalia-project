@@ -1,0 +1,30 @@
+---
+- name: Crear directorio de despliegue para el parser en el nodo
+  file:
+    path: "/opt/anomalia/parser"
+    state: directory
+    mode: '0755'
+
+- name: Copiar plantilla de Docker Compose para el parser
+  template:
+    src: docker-compose.yml.j2
+    dest: "/opt/anomalia/parser/docker-compose.yml"
+    mode: '0644'
+
+- name: Asegurar que se descargue la última versión de la imagen
+  ansible.builtin.shell: docker pull {{ parser_image }}
+  environment:
+    PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/usr/bin"
+  register: pull_result
+  changed_when: "'Downloaded newer image' in pull_result.stdout or 'Image is up to date' not in pull_result.stdout"
+
+- name: Levantar stack de contenedores del parser con Docker Compose
+  ansible.builtin.shell: docker-compose up -d --force-recreate
+  args:
+    chdir: "/opt/anomalia/parser"
+  environment:
+    PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/usr/bin"
+  register: result
+  until: result.rc == 0
+  retries: 3
+  delay: 10

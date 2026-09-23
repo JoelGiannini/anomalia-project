@@ -1,0 +1,11 @@
+[Unit]
+Description=Anomalia VictoriaLogs Storage Service
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/vlstorage -httpListenAddr={{ vlstorage_ip | default(ansible_host) | default('127.0.0.1') }}:{{ vlstorage_port | default('8482') }} -storageDataPath={{ vlstorage_path | default('/var/lib/anomalia/victorialogs/data') }} -retentionPeriod={{ vllogs_retention | default('30d') }}
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,335 @@
+-- =========================================================================
+-- ESQUEMA INICIAL DE BASE DE DATOS - ANOMALIA PROJECT (ABM & INFRAESTRUCTURA)
+-- =========================================================================
+
+-- 1. Crear tabla de roles primero por la clave foránea
+CREATE TABLE IF NOT EXISTS roles (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(50) UNIQUE NOT NULL,
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 2. Crear tabla de perfiles de acceso
+CREATE TABLE IF NOT EXISTS profiles (
+    id SERIAL PRIMARY KEY,
+    code VARCHAR(50) UNIQUE NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 3. Tabla intermedia para la relación N a M entre roles y perfiles
+CREATE TABLE IF NOT EXISTS role_profiles (
+    role_id INTEGER REFERENCES roles(id) ON DELETE CASCADE,
+    profile_id INTEGER REFERENCES profiles(id) ON DELETE CASCADE,
+    PRIMARY KEY (role_id, profile_id)
+);
+
+-- 4. Crear tabla de tenants (entornos, proyectos o cuentas de VictoriaMetrics/VictoriaLogs/Pyroscope)
+CREATE TABLE IF NOT EXISTS tenants (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,      -- Ej: 'METRICS', 'TRACES', 'PROFILES', 'AUDIT_LOGS'
+    type VARCHAR(50) DEFAULT 'metrics',     -- Tipo de tenant: 'metrics', 'traces', 'profiles', 'logs'
+    account_id INTEGER,                     -- AccountID para VictoriaMetrics/Logs (NULL si no aplica)
+    project_id INTEGER,                     -- ProjectID para VictoriaMetrics/Logs (NULL si no aplica)
+    environment VARCHAR(50),                -- Ej: 'work', 'live', 'play', 'default'
+    port INTEGER DEFAULT 8427,              -- Puerto de escucha del servicio (ej: vmauth, vm, vlogs, pyroscope)
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 5. Tabla intermedia para asociar roles a múltiples tenants (Relación N a M)
+CREATE TABLE IF NOT EXISTS role_tenants (
+    role_id INTEGER REFERENCES roles(id) ON DELETE CASCADE,
+    tenant_id INTEGER REFERENCES tenants(id) ON DELETE CASCADE,
+    PRIMARY KEY (role_id, tenant_id)
+);
+
+-- 6. Crear tabla de usuarios
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(100) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    avatar_url TEXT DEFAULT '',
+    theme VARCHAR(50) DEFAULT 'theme-enterprise-blue',
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 7. Tabla intermedia para permitir múltiples roles por usuario (N a M)
+CREATE TABLE IF NOT EXISTS user_roles (
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    role_id INTEGER REFERENCES roles(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, role_id)
+);
+
+-- 8. Crear tabla de sesiones para validación por session_id
+CREATE TABLE IF NOT EXISTS sessions (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(255) UNIQUE NOT NULL,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Índices de rendimiento para sesiones
+CREATE INDEX IF NOT EXISTS idx_sessions_session_id ON sessions(session_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+
+-- =========================================================================
+-- DATOS INICIALES (SEEDERS)
+-- =========================================================================
+
+-- Insertar roles base actualizados del sistema (incluyendo infra_manager y approvers)[cite: 18]
+INSERT INTO roles (name, description) VALUES 
+('admin', 'Control total del sistema, OIDC, IA y ABM'),
+('viewer', 'Visualización general de métricas, trazas, logs y perfiles de lectura'),
+('auditor', 'Acceso de solo lectura a auditoría y logs'),
+('tenant_manager', 'Gestión y aprovisionamiento de tenants en VictoriaMetrics y VictoriaLogs'),
+('user_manager', 'Gestión integral de usuarios y perfiles de acceso'),
+('role_manager', 'Gestión y asignación de roles y perfiles'),
+('infra_manager', 'Gestión y control de la infraestructura y componentes de red'),
+('approvers', 'Gestión de aprobaciones del sistema')
+ON CONFLICT (name) DO NOTHING;
+
+-- Insertar perfiles base por sección del panel de control (incluyendo approvers y audit)[cite: 18]
+INSERT INTO profiles (code, name, description) VALUES 
+('users_manager', 'Gestión de Usuarios', 'Permite crear, modificar, activar y dar de baja usuarios'),
+('roles_manager', 'Gestión de Roles', 'Permite administrar y configurar los roles del sistema'),
+('profile_manager', 'Gestión de Perfiles', 'Permite administrar y asignar perfiles de acceso'),
+('access_metrics', 'Acceso a Métricas', 'Permite ver dashboards y métricas de infraestructura (Time Series)'),
+('access_logs', 'Acceso a Logs', 'Permite consultar y analizar los registros de eventos'),
+('access_Continuous_Profiling', 'Acceso a Continuous Profiling', 'Permite ver el perfilado continuo de aplicaciones y servicios'),
+('access_traces', 'Acceso a Trazas', 'Permite visualizar y analizar trazas distribuidas'),
+('access_alerts', 'Acceso a Alertas', 'Permite visualizar el flujo de alertas y diagnósticos de IA'),
+('tenants_manager', 'Gestión de Tenants', 'Permite dar de alta y administrar AccountID y ProjectID'),
+('alerts_manager', 'Gestión de Alertas', 'Permite configurar, silenciar y administrar reglas de alertas'),
+('infra_manager', 'Gestión de Infraestructura', 'Permite administrar nodos, componentes y OIDC'),
+('admin', 'Administración Global', 'Control total de configuración general, OIDC y ABM'),
+('approvers', 'Aprobaciones', 'Permite gestionar y aprobar solicitudes en el sistema'),
+('audit', 'Auditoría', 'Permite realizar tareas de auditoría y revisión de registros')
+ON CONFLICT (code) DO NOTHING;
+
+-- Asignar perfiles por defecto a los roles
+-- 1. admin (Todos los perfiles)
+INSERT INTO role_profiles (role_id, profile_id)
+SELECT r.id, p.id FROM roles r, profiles p 
+WHERE r.name = 'admin'
+  AND NOT EXISTS (
+      SELECT 1 FROM role_profiles rp WHERE rp.role_id = r.id AND rp.profile_id = p.id
+  );
+
+-- 2. viewer (Métricas, logs, profiling, trazas y alertas)
+INSERT INTO role_profiles (role_id, profile_id)
+SELECT r.id, p.id FROM roles r, profiles p 
+WHERE r.name = 'viewer' AND p.code IN ('access_metrics', 'access_logs', 'access_Continuous_Profiling', 'access_traces', 'access_alerts')
+  AND NOT EXISTS (
+      SELECT 1 FROM role_profiles rp WHERE rp.role_id = r.id AND rp.profile_id = p.id
+  );
+
+-- 3. auditor (Modificado: únicamente perfil 'audit')[cite: 18]
+INSERT INTO role_profiles (role_id, profile_id)
+SELECT r.id, p.id FROM roles r, profiles p 
+WHERE r.name = 'auditor' AND p.code IN ('audit')
+  AND NOT EXISTS (
+      SELECT 1 FROM role_profiles rp WHERE rp.role_id = r.id AND rp.profile_id = p.id
+  );
+
+-- 4. tenant_manager (Tenants, métricas y logs)
+INSERT INTO role_profiles (role_id, profile_id)
+SELECT r.id, p.id FROM roles r, profiles p 
+WHERE r.name = 'tenant_manager' AND p.code IN ('tenants_manager', 'access_metrics', 'access_logs')
+  AND NOT EXISTS (
+      SELECT 1 FROM role_profiles rp WHERE rp.role_id = r.id AND rp.profile_id = p.id
+  );
+
+-- 5. user_manager (Usuarios y perfiles)
+INSERT INTO role_profiles (role_id, profile_id)
+SELECT r.id, p.id FROM roles r, profiles p 
+WHERE r.name = 'user_manager' AND p.code IN ('users_manager', 'profile_manager')
+  AND NOT EXISTS (
+      SELECT 1 FROM role_profiles rp WHERE rp.role_id = r.id AND rp.profile_id = p.id
+  );
+
+-- 6. role_manager (Roles y perfiles)
+INSERT INTO role_profiles (role_id, profile_id)
+SELECT r.id, p.id FROM roles r, profiles p 
+WHERE r.name = 'role_manager' AND p.code IN ('roles_manager', 'profile_manager')
+  AND NOT EXISTS (
+      SELECT 1 FROM role_profiles rp WHERE rp.role_id = r.id AND rp.profile_id = p.id
+  );
+
+-- 7. infra_manager (Asociación del perfil infra_manager)[cite: 4, 18]
+INSERT INTO role_profiles (role_id, profile_id)
+SELECT r.id, p.id FROM roles r, profiles p 
+WHERE r.name = 'infra_manager' AND p.code = 'infra_manager'
+  AND NOT EXISTS (
+      SELECT 1 FROM role_profiles rp WHERE rp.role_id = r.id AND rp.profile_id = p.id
+  );
+
+-- 8. approvers (Asociación del perfil approvers)[cite: 18]
+INSERT INTO role_profiles (role_id, profile_id)
+SELECT r.id, p.id FROM roles r, profiles p 
+WHERE r.name = 'approvers' AND p.code = 'approvers'
+  AND NOT EXISTS (
+      SELECT 1 FROM role_profiles rp WHERE rp.role_id = r.id AND rp.profile_id = p.id
+  );
+
+-- Insertar tenants sincronizados exactamente con vmauth.yml.j2
+INSERT INTO tenants (name, type, account_id, project_id, environment, port, description) VALUES 
+('METRICS', 'metrics', 0, 0, 'default', 8400, 'Tenant para métricas de infraestructura (VictoriaMetrics - vminsert)'),
+('TRACES', 'traces', 0, 1, 'default', 8490, 'Tenant para trazas distribuidas OTLP (VictoriaTraces - vtinsert)'),
+('PROFILES', 'profiles', NULL, NULL, 'default', 4040, 'Tenant de perfilado continuo vía Pyroscope (X-Scope-OrgID: PROFILES)'),
+('AUDIT_LOGS', 'logs', 0, 3, 'default', 8480, 'Tenant para logs de auditoría (VictoriaLogs - vlinsert)')
+ON CONFLICT (name) DO UPDATE SET 
+    type = EXCLUDED.type,
+    account_id = EXCLUDED.account_id,
+    project_id = EXCLUDED.project_id,
+    port = EXCLUDED.port,
+    description = EXCLUDED.description;
+
+-- Asignar acceso a todos los tenants al rol 'admin' por defecto
+INSERT INTO role_tenants (role_id, tenant_id)
+SELECT r.id, t.id FROM roles r, tenants t 
+WHERE r.name = 'admin'
+  AND NOT EXISTS (
+      SELECT 1 FROM role_tenants rt WHERE rt.role_id = r.id AND rt.tenant_id = t.id
+  );
+
+-- Asignar acceso a tenants de trabajo al rol 'tenant_manager'
+INSERT INTO role_tenants (role_id, tenant_id)
+SELECT r.id, t.id FROM roles r, tenants t 
+WHERE r.name = 'tenant_manager' AND (t.environment = 'work' OR t.environment = 'default')
+  AND NOT EXISTS (
+      SELECT 1 FROM role_tenants rt WHERE rt.role_id = r.id AND rt.tenant_id = t.id
+  );
+
+-- Asignar acceso al tenant AUDIT_LOGS exclusivamente al rol 'auditor'[cite: 18]
+INSERT INTO role_tenants (role_id, tenant_id)
+SELECT r.id, t.id FROM roles r, tenants t 
+WHERE r.name = 'auditor' AND t.name = 'AUDIT_LOGS'
+  AND NOT EXISTS (
+      SELECT 1 FROM role_tenants rt WHERE rt.role_id = r.id AND rt.tenant_id = t.id
+  );
+
+-- Insertar usuario administrador por defecto
+INSERT INTO users (username, password_hash, is_active, theme) VALUES 
+('admin@anomalia', 'admin123_hashed', true, 'theme-enterprise-blue')
+ON CONFLICT (username) 
+DO UPDATE SET password_hash = 'admin123_hashed', is_active = true;
+
+-- Asignar el rol 'admin' al usuario administrador por defecto
+INSERT INTO user_roles (user_id, role_id)
+SELECT u.id, r.id FROM users u, roles r 
+WHERE u.username = 'admin@anomalia' AND r.name = 'admin'
+  AND NOT EXISTS (
+      SELECT 1 FROM user_roles ur WHERE ur.user_id = u.id AND ur.role_id = r.id
+  );
+
+-- =========================================================================
+-- INFRAESTRUCTURA, OIDC Y MONITOREO
+-- =========================================================================
+
+-- Crear tabla general para nodos e infraestructura de componentes (con soporte de service_ip)
+CREATE TABLE IF NOT EXISTS infrastructure_nodes (
+    id SERIAL PRIMARY KEY,
+    hostname VARCHAR(150) NOT NULL,
+    ip_address VARCHAR(50) NOT NULL,     -- IP de acceso al host (ansible_host)
+    service_ip VARCHAR(50),              -- IP de servicio (si no se define en inventario, usa la de host)
+    component_type VARCHAR(50) NOT NULL DEFAULT 'auth',
+    port INTEGER DEFAULT 8427,
+    status VARCHAR(50) DEFAULT 'operational',
+    is_active BOOLEAN DEFAULT TRUE,
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- <-- Columna agregada para evitar errores en admin_router.py
+    CONSTRAINT unique_host_component UNIQUE (hostname, component_type)
+);
+
+-- Crear tabla para la configuración dinámica de Proveedores de Identidad (IdP / OIDC)
+CREATE TABLE IF NOT EXISTS oidc_providers (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    client_id VARCHAR(255) NOT NULL,
+    client_secret TEXT DEFAULT '',
+    issuer_url TEXT NOT NULL,
+    redirect_uri TEXT DEFAULT '',
+    is_active BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Insertar un proveedor OIDC de ejemplo base
+INSERT INTO oidc_providers (name, client_id, client_secret, issuer_url, redirect_uri, is_active) VALUES
+('Keycloak AIOps', 'anomalia-client-id', 'change-me-secret', 'http://keycloak:8080/realms/aiops', 'https://anomalia.local/api/v1/auth/callback', true)
+ON CONFLICT (name) DO NOTHING;
+
+-- Tabla para almacenar el historial de alertas y análisis de IA
+CREATE TABLE IF NOT EXISTS alert_history (
+    id SERIAL PRIMARY KEY,
+    alertname VARCHAR(255) NOT NULL,
+    severity VARCHAR(50),
+    summary TEXT,
+    description TEXT,
+    ai_analysis TEXT,
+    status VARCHAR(50),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Tabla para registrar los dispositivos móviles (APK / Android)
+CREATE TABLE IF NOT EXISTS user_devices (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    fcm_token TEXT UNIQUE NOT NULL,
+    platform VARCHAR(50) DEFAULT 'android',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Sincronización automática de nodos desde el inventario de Ansible en el primer deploy
+{% set component_groups = [
+    {'group': 'vlogs_storage_nodes', 'type': 'vlogs_storage', 'port_var': 'vlstorage_port', 'ip_var': 'vlstorage_ip', 'default_port': 8482, 'desc': 'Almacenamiento de VictoriaLogs'},
+    {'group': 'vlogs_insert_nodes', 'type': 'vlogs_insert', 'port_var': 'vlinsert_port', 'ip_var': 'vlinsert_ip', 'default_port': 8480, 'desc': 'Nodo de inserción para VictoriaLogs'},
+    {'group': 'vlogs_select_nodes', 'type': 'vlogs_select', 'port_var': 'vlselect_port', 'ip_var': 'vlselect_ip', 'default_port': 8481, 'desc': 'Nodo de consulta para VictoriaLogs'},
+    {'group': 'vm_storage_nodes', 'type': 'vm_storage', 'port_var': 'vmstorage_port', 'ip_var': 'vmstorage_ip', 'default_port': 8402, 'desc': 'Almacenamiento de VictoriaMetrics'},
+    {'group': 'vm_insert_nodes', 'type': 'vm_insert', 'port_var': 'vminsert_port', 'ip_var': 'vminsert_ip', 'default_port': 8400, 'desc': 'Nodo de inserción para VictoriaMetrics'},
+    {'group': 'vm_select_nodes', 'type': 'vm_select', 'port_var': 'vmselect_port', 'ip_var': 'vmselect_ip', 'default_port': 8401, 'desc': 'Nodo de consulta para VictoriaMetrics'},
+    {'group': 'vt_storage_nodes', 'type': 'vt_storage', 'port_var': 'vtstorage_port', 'ip_var': 'vtstorage_ip', 'default_port': 8492, 'desc': 'Almacenamiento de VictoriaTraces'},
+    {'group': 'vt_insert_nodes', 'type': 'vt_insert', 'port_var': 'vtinsert_port', 'ip_var': 'vtinsert_ip', 'default_port': 8490, 'desc': 'Nodo de inserción para VictoriaTraces'},
+    {'group': 'vt_select_nodes', 'type': 'vt_select', 'port_var': 'vtselect_port', 'ip_var': 'vtselect_ip', 'default_port': 8491, 'desc': 'Nodo de consulta para VictoriaTraces'},
+    {'group': 'pyroscope_nodes', 'type': 'pyroscope', 'port_var': 'pyroscope_port', 'ip_var': 'pyroscope_ip', 'default_port': 4040, 'desc': 'Servidor de profiling Pyroscope'},
+    {'group': 'vmauth_nodes', 'type': 'vmauth', 'port_var': 'vmauth_port', 'ip_var': 'vmauth_ip', 'default_port': 8427, 'desc': 'Pasarela de autenticación y ruteo multi-tenant'},
+    {'group': 'vmagent_nodes', 'type': 'vmagent', 'port_var': 'vmagent_port', 'ip_var': 'vmagent_ip', 'default_port': 8429, 'desc': 'Agente de recolección de métricas'},
+    {'group': 'alertmanager_nodes', 'type': 'alertmanager', 'port_var': 'alertmanager_port', 'ip_var': 'alertmanager_ip', 'default_port': 9093, 'desc': 'Gestor de alertas Alertmanager'},
+    {'group': 'vmalert_nodes', 'type': 'vmalert', 'port_var': 'vmalert_port', 'ip_var': 'vmalert_ip', 'default_port': 8880, 'desc': 'Evaluador de reglas Vmalert'},
+    {'group': 'backend_nodes', 'type': 'backend', 'port_var': 'backend_port', 'ip_var': 'backend_ip', 'default_port': 5000, 'desc': 'Servicio Backend de la aplicación'},
+    {'group': 'parser_nodes', 'type': 'parser', 'port_var': 'parser_port', 'ip_var': 'parser_ip', 'default_port': 8080, 'desc': 'Servicio Parser de datos'}
+] %}
+
+{% set ns = namespace(rows=[]) %}
+{% for comp in component_groups %}
+  {% if groups[comp.group] is defined and groups[comp.group] | length > 0 %}
+    {% for host in groups[comp.group] %}
+      {# IP de acceso al host (ansible_host) #}
+      {% set host_ip = hostvars[host].ansible_host | default('127.0.0.1') %}
+      
+      {# IP de servicio (busca la variable específica del componente, ej: vlstorage_ip, backend_ip, etc. Si no existe, usa la ip del host) #}
+      {% set srv_ip = hostvars[host][comp.ip_var] | default(hostvars[host].service_ip) | default(host_ip) %}
+      
+      {% set h_port = hostvars[host][comp.port_var] | default(comp.default_port) %}
+      {% set row_str = "('" ~ host ~ "', '" ~ host_ip ~ "', '" ~ srv_ip ~ "', '" ~ comp.type ~ "', " ~ h_port ~ ", 'operational', '" ~ comp.desc ~ "')" %}
+      {% set ns.rows = ns.rows + [row_str] %}
+    {% endfor %}
+  {% endif %}
+{% endfor %}
+
+{% if ns.rows | length > 0 %}
+INSERT INTO infrastructure_nodes (hostname, ip_address, service_ip, component_type, port, status, description) VALUES
+{{ ns.rows | join(',\n') }}
+ON CONFLICT (hostname, component_type) DO UPDATE SET 
+    ip_address = EXCLUDED.ip_address,
+    service_ip = EXCLUDED.service_ip,
+    port = EXCLUDED.port,
+    description = EXCLUDED.description,
+    status = 'operational',
+    updated_at = CURRENT_TIMESTAMP;
+{% endif %}

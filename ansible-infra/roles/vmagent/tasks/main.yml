@@ -1,0 +1,26 @@
+---
+- name: Crear directorio de trabajo para anomalia vmagent
+  file:
+    path: /var/lib/anomalia/vmagent/data
+    state: directory
+    mode: '0755'
+
+- name: Crear directorio de configuración para anomalia vmagent
+  file:
+    path: /etc/anomalia/vmagent
+    state: directory
+    mode: '0755'
+
+- name: Generar archivo de configuración vmagent.yaml completo
+  template:
+    src: vmagent.yaml.j2
+    dest: /etc/anomalia/vmagent/vmagent.yaml
+    mode: '0644'
+  notify: Recargar systemd y reiniciar vmagent
+
+- name: Copiar servicio systemd de anomalia vmagent
+  template:
+    src: vmagent.service.j2
+    dest: /etc/systemd/system/anomalia-vmagent.service
+    mode: '0644'
+  notify: Recargar systemd y reiniciar vmagent

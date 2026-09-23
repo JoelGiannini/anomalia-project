@@ -1,0 +1,12 @@
+[Unit]
+Description=Anomalia VictoriaTraces Select Service
+After=network.target
+
+[Service]
+User=root
+ExecStart=/usr/local/bin/vtselect {%- for host in groups['vt_storage_nodes'] %} -storageNode={{ hostvars[host].vtstorage_ip | default(hostvars[host].ansible_host) | default('127.0.0.1') }}:{{ hostvars[host].vtstorage_port | default('8492') }}{% endfor %} -httpListenAddr={{ vtselect_ip | default(ansible_host) | default('127.0.0.1') }}:{{ vt_select_port | default('4042') }}
+
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

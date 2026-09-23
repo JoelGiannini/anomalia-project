@@ -1,0 +1,28 @@
+---
+- import_playbook: install-binaries.yml
+
+- name: Desplegar infraestructura completa de Anomalia y Backend Dockerizado
+  hosts: all_nodes
+  become: yes
+  vars:
+    vlstorage_path: "/var/lib/anomalia/victorialogs/data"
+    vmstorage_path: "/var/lib/anomalia/vmstorage/data"
+    vtstorage_path: "/var/lib/anomalia/victoriatraces/data"
+    pyroscope_storage_path: "/var/lib/anomalia/pyroscope/data"
+    alertmanager_storage_path: "/var/lib/anomalia/alertmanager"
+
+  roles:
+    - role: victorialogs
+    - role: victoriametrics
+    - role: victoriatraces
+    - role: pyroscope
+    - role: vmauth
+    - role: vmagent
+    - role: alertmanager
+    - role: vmalert
+    - role: backend
+      tags: ['backend']
+      when: inventory_hostname in groups.get('backend_nodes', [])
+    - role: parser
+      tags: ['parser']
+      when: inventory_hostname in groups.get('parser_nodes', [])

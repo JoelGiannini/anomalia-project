@@ -1,0 +1,11 @@
+[Unit]
+Description=Anomalia VmAuth Proxy Service
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/vmauth-prod -httpListenAddr={{ vmauth_ip | default(ansible_host) | default('127.0.0.1') }}:{{ vmauth_server_port | default('8427') }} -envflag.enable -auth.config=/etc/anomalia/vmauth/config.yml
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target

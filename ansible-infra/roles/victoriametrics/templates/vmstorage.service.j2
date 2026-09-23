@@ -1,0 +1,15 @@
+[Unit]
+Description=Anomalia VictoriaMetrics Storage Service
+After=network.target
+
+[Service]
+Type=simple
+Restart=always
+ExecStart=/usr/local/bin/vmstorage -httpListenAddr={{ vmstorage_ip | default(ansible_host) | default('127.0.0.1') }}:{{ vmstorage_port | default('8402') }} -vmselectAddr={{ vmstorage_ip | default(ansible_host) | default('127.0.0.1') }}:{{ vmstorage_vmselect_port | default('8404') }} -vminsertAddr={{ vmstorage_ip | default(ansible_host) | default('127.0.0.1') }}:{{ vmstorage_vminsert_port | default('8403') }} -storageDataPath={{ vmstorage_path | default('/var/lib/anomalia/vmstorage/data') }} -retentionPeriod={{ vm_retention_period | default(vllogs_retention | default('30d')) }}
+PrivateTmp=yes
+ProtectHome=yes
+NoNewPrivileges=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=Anomalia VictoriaMetrics Agent
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/lib/anomalia/vmagent/data
+ExecStart=/usr/local/bin/vmagent-prod -promscrape.config=/etc/anomalia/vmagent/vmagent.yaml -promscrape.config.strictParse=false -remoteWrite.url=http://{{ hostvars[groups['vmauth_nodes'][0]].vmauth_ip | default(hostvars[groups['vmauth_nodes'][0]].ansible_host) | default('127.0.0.1') }}:{{ hostvars[groups['vmauth_nodes'][0]].vmauth_server_port | default('8427') }}/insert/prometheus/api/v1/write?tenant=METRICS -httpListenAddr={{ vmagent_ip | default(ansible_host) | default('127.0.0.1') }}:{{ vmagent_port | default('8429') }}
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,4 @@
+[Service]
+User=root
+ExecStart=/usr/local/bin/vmalert --datasource.url=http://{{ hostvars[groups['vm_select_nodes'][0]].ansible_host | default('127.0.0.1') }}:{{ hostvars[groups['vm_select_nodes'][0]].vmselect_port | default('8401') }} --remoteRead.url=http://{{ hostvars[groups['vm_select_nodes'][0]].ansible_host | default('127.0.0.1') }}:{{ hostvars[groups['vm_select_nodes'][0]].vmselect_port | default('8401') }} --remoteWrite.url=http://{{ hostvars[groups['vm_insert_nodes'][0]].ansible_host | default('127.0.0.1') }}:{{ hostvars[groups['vm_insert_nodes'][0]].vminsert_port | default('8400') }} -notifier.url=http://{{ hostvars[groups['alertmanager_nodes'][0]].ansible_host | default('127.0.0.1') }}:{{ hostvars[groups['alertmanager_nodes'][0]].alertmanager_port | default('9093') }} -rule=/etc/anomalia/vmalert/alert_rules.yml -evaluationInterval=15s
+Restart=always

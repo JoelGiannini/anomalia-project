@@ -1,0 +1,11 @@
+[Unit]
+Description=Anomalia Pyroscope Continuous Profiling Service
+After=network.target
+
+[Service]
+User=root
+ExecStart=/usr/local/bin/pyroscope server -logger-level=info -data-path={{ pyroscope_storage_path }} -server-port=:{{ pyroscope_port | default('4040') }}
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

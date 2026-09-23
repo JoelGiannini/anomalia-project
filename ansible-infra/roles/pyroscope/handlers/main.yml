@@ -1,0 +1,6 @@
+---
+- name: Recargar systemd y reiniciar pyroscope
+  systemd:
+    name: anomalia-pyroscope
+    daemon_reload: yes
+    state: restarted

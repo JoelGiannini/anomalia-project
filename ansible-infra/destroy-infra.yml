@@ -1,0 +1,76 @@
+---
+- name: Limpiar y desinstalar la infraestructura de Anomalia
+  hosts: all_nodes
+  become: yes
+  tasks:
+    - name: Detener y deshabilitar servicios de systemd de Anomalia
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: no
+      loop:
+        - anomalia-vlstorage
+        - anomalia-vlinsert
+        - anomalia-vlselect
+        - anomalia-vmstorage
+        - anomalia-vminsert
+        - anomalia-vmselect
+        - anomalia-vtstorage
+        - anomalia-vtinsert
+        - anomalia-vtselect
+        - anomalia-pyroscope
+        - anomalia-vmauth
+        - anomalia-vmagent
+        - anomalia-alertmanager
+        - anomalia-vmalert
+      ignore_errors: yes
+
+    - name: Eliminar archivos de servicios de systemd
+      file:
+        path: "/etc/systemd/system/{{ item }}.service"
+        state: absent
+      loop:
+        - anomalia-vlstorage
+        - anomalia-vlinsert
+        - anomalia-vlselect
+        - anomalia-vmstorage
+        - anomalia-vminsert
+        - anomalia-vmselect
+        - anomalia-vtstorage
+        - anomalia-vtinsert
+        - anomalia-vtselect
+        - anomalia-pyroscope
+        - anomalia-vmauth
+        - anomalia-vmagent
+        - anomalia-alertmanager
+        - anomalia-vmalert
+
+    - name: Recargar el daemon de systemd para aplicar cambios
+      systemd:
+        daemon_reload: yes
+
+    - name: Detener y eliminar contenedores Docker de Backend con Docker Compose
+      command: docker compose down -v
+      args:
+        chdir: "/opt/anomalia/backend"
+      ignore_errors: yes
+
+    - name: Detener y eliminar contenedores Docker de Parser con Docker Compose
+      command: docker compose down -v
+      args:
+        chdir: "/opt/anomalia/parser"
+      ignore_errors: yes
+
+    - name: Forzar la destrucción y limpieza de contenedores Docker remanentes
+      shell: |
+        docker rm -f anomalia_parser anomalia_gw anomalia_keycloak anomalia_postgres anomalia_ollama 2>/dev/null || true
+      ignore_errors: yes
+
+    - name: Eliminar directorios de datos, despliegues y configuración de Anomalia
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/anomalia
+        - /etc/anomalia
+        - /opt/anomalia

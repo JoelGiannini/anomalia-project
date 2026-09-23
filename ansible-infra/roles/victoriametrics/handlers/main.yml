@@ -1,0 +1,21 @@
+---
+- name: Recargar systemd y reiniciar vmstorage
+  systemd:
+    daemon_reload: yes
+    name: anomalia-vmstorage
+    state: restarted
+    enabled: yes
+
+- name: Recargar systemd y reiniciar vminsert
+  systemd:
+    daemon_reload: yes
+    name: anomalia-vminsert
+    state: restarted
+    enabled: yes
+
+- name: Recargar systemd y reiniciar vmselect
+  systemd:
+    daemon_reload: yes
+    name: anomalia-vmselect
+    state: restarted
+    enabled: yes

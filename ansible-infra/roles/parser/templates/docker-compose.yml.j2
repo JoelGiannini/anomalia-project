@@ -1,0 +1,18 @@
+version: '3.8'
+
+networks:
+  aiops-net:
+    driver: bridge
+
+services:
+  parser:
+    image: "{{ parser_image }}"
+    container_name: anomalia_parser
+    ports:
+      - "{{ parser_port }}:8090"
+    environment:
+      - PORT=8090
+      - BACKEND_URL=http://anomalia_gw:8000
+    networks:
+      - aiops-net
+    restart: unless-stopped

@@ -1,0 +1,27 @@
+---
+- name: Crear directorios de almacenamiento para Anomalia Metricas
+  file:
+    path: "{{ vmstorage_path }}"
+    state: directory
+    mode: '0755'
+
+- name: Copiar servicio systemd de anomalia vmstorage
+  template:
+    src: vmstorage.service.j2
+    dest: /etc/systemd/system/anomalia-vmstorage.service
+    mode: '0644'
+  notify: Recargar systemd y reiniciar vmstorage
+
+- name: Copiar servicio systemd de anomalia vminsert
+  template:
+    src: vminsert.service.j2
+    dest: /etc/systemd/system/anomalia-vminsert.service
+    mode: '0644'
+  notify: Recargar systemd y reiniciar vminsert
+
+- name: Copiar servicio systemd de anomalia vmselect
+  template:
+    src: vmselect.service.j2
+    dest: /etc/systemd/system/anomalia-vmselect.service
+    mode: '0644'
+  notify: Recargar systemd y reiniciar vmselect

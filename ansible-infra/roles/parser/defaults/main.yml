@@ -1,0 +1,3 @@
+---
+parser_port: 8090
+parser_image: "persesdev/perses:latest"

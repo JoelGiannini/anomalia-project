@@ -1,0 +1,7 @@
+---
+- name: Recargar systemd y reiniciar vmagent
+  systemd:
+    daemon_reload: yes
+    name: anomalia-vmagent
+    state: restarted
+    enabled: yes
