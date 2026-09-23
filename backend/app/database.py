@@ -33,6 +33,14 @@ def get_db_connection():
                 raise e
             time.sleep(2)
 
+def get_db():
+    """Dependencia de FastAPI para obtener una sesión/conexión de base de datos."""
+    conn = get_db_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
 def init_db(hash_password_func):
     conn = get_db_connection()
     cursor = conn.cursor()

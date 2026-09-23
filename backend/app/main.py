@@ -4,12 +4,13 @@ import json
 import psutil
 import pyroscope
 import httpx
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, Depends
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import Gauge, generate_latest, CONTENT_TYPE_LATEST
+from sqlalchemy.orm import Session
 
 from opentelemetry import trace, metrics
 from opentelemetry.sdk.trace import TracerProvider
@@ -21,7 +22,7 @@ from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExp
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.resources import Resource
 
-from .database import init_db
+from .database import init_db, get_db
 from .auth import hash_password
 from .oidc import router as oidc_router
 from .routers import auth_router, admin_router, infra_router
@@ -191,18 +192,14 @@ app.include_router(infra_router.router)
 
 # Ruta puente para solucionar el error 404 detectado en /api/v1/tenants/my-tenants
 @app.get("/api/v1/tenants/my-tenants")
-def get_my_tenants_alias(request: Request):
-    from .database import SessionLocal
+def get_my_tenants_alias(request: Request, db: Session = Depends(get_db)):
     from sqlalchemy import text
-    db = SessionLocal()
     try:
         result = db.execute(text("SELECT id, name, type, environment, port, description FROM tenants")).fetchall()
         tenants_list = [{"id": r[0], "name": r[1], "type": r[2], "environment": r[3], "port": r[4], "description": r[5]} for r in result]
         return {"tenants": tenants_list}
     except Exception:
         return {"tenants": []}
-    finally:
-        db.close()
 
 # --- MÉTRICAS DE SISTEMA (ANOMALIA) ---
 CPU_USAGE_GAUGE = Gauge('anomalia_system_cpu_usage_percent', 'Uso actual de CPU del sistema')

@@ -393,6 +393,9 @@ export const admin = {
                                 <h4 class="font-bold text-base">${p.name}</h4>
                                 <span class="text-xs dynamic-card px-2 py-0.5 rounded border font-mono">ID: ${p.id}</span>
                             </div>
+                            <div class="mb-3">
+                                <span class="text-xs dynamic-accent px-2 py-0.5 rounded font-mono">CODE: ${p.code}</span>
+                            </div>
                             <p class="text-xs opacity-75 mb-4">${p.description || 'Sin descripción'}</p>
                         </div>
                         <div class="flex justify-end space-x-2 pt-3 border-t dynamic-border">
@@ -415,6 +418,7 @@ export const admin = {
         const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
         setVal('profile-id', p ? p.id : '');
         setVal('profile-input-name', p ? p.name : '');
+        setVal('profile-input-code', p ? p.code : '');
         setVal('profile-input-desc', p && p.description ? p.description : '');
         const titleEl = document.getElementById('modal-profile-title');
         if (titleEl) titleEl.innerText = p ? 'Editar Perfil' : 'Crear Perfil';
@@ -424,6 +428,7 @@ export const admin = {
     async saveProfile() {
         const id = document.getElementById('profile-id')?.value;
         const name = document.getElementById('profile-input-name')?.value;
+        const code = document.getElementById('profile-input-code')?.value;
         const description = document.getElementById('profile-input-desc')?.value;
         const token = api.getToken();
 
@@ -434,7 +439,7 @@ export const admin = {
             const res = await fetch(url, {
                 method,
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ name, description })
+                body: JSON.stringify({ code, name, description })
             });
 
             if (res.ok) {

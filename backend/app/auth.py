@@ -5,6 +5,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
 from jwt import PyJWKClient
 from passlib.context import CryptContext
+from .database import get_db_connection
 
 security = HTTPBearer()
 
@@ -60,7 +61,6 @@ def verify_admin_token(credentials: HTTPAuthorizationCredentials = Security(secu
         roles = payload.get("roles", [])
         primary_role = payload.get("role", "")
         
-        # Validación flexible y robusta para el rol de administrador
         if primary_role != "admin" and "admin" not in roles:
             raise HTTPException(status_code=403, detail="Privilegios de administrador requeridos.")
         return payload
@@ -71,7 +71,7 @@ def verify_admin_token(credentials: HTTPAuthorizationCredentials = Security(secu
         )
 
 def verify_any_user_token(credentials: HTTPAuthorizationCredentials = Security(security)):
-    """Valida cualquier token JWT interno emitido, sin exigir un rol específico (para usuarios estándar/visores)."""
+    """Valida cualquier token JWT interno emitido, sin exigir un rol específico."""
     token = credentials.credentials
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -83,9 +83,8 @@ def verify_any_user_token(credentials: HTTPAuthorizationCredentials = Security(s
         )
 
 def get_current_user_profiles(payload: dict = Depends(verify_any_user_token)):
-    """Extrae y retorna los perfiles o datos de usuario del payload del token validado."""
+    """Extrae y retorna los datos y roles del usuario del payload del token."""
     try:
-        # Puedes ajustar los campos según cómo emitas los datos en tus tokens (ej. sub, preferred_username, roles, etc.)
         return {
             "username": payload.get("sub") or payload.get("username"),
             "role": payload.get("role"),
@@ -96,3 +95,42 @@ def get_current_user_profiles(payload: dict = Depends(verify_any_user_token)):
             status_code=400,
             detail=f"No se pudieron extraer los perfiles del usuario: {str(e)}"
         )
+
+def verify_profile_access(required_profile: str):
+    """Verifica si el usuario actual posee el perfil requerido a través de sus roles asignados."""
+    def dependency(payload: dict = Depends(verify_any_user_token)):
+        roles = payload.get("roles", [])
+        primary_role = payload.get("role", "")
+        
+        all_user_roles = [primary_role] + roles if primary_role else roles
+        if "admin" in all_user_roles:
+            return payload  # El admin global tiene acceso a todo
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            # Consultar si alguno de los roles del usuario tiene asignado el perfil requerido
+            format_strings = ','.join(['%s'] * len(all_user_roles)) if all_user_roles else "''"
+            query = f"""
+                SELECT COUNT(*) FROM role_profiles rp
+                JOIN roles r ON rp.role_id = r.id
+                JOIN profiles p ON rp.profile_id = p.id
+                WHERE r.name IN ({format_strings}) AND p.code = %s;
+            """
+            cursor.execute(query, tuple(all_user_roles) + (required_profile,))
+            count = cursor.fetchone()[0]
+            
+            if count == 0:
+                raise HTTPException(
+                    status_code=403, 
+                    detail=f"Acceso denegado. Se requiere el perfil '{required_profile}'."
+                )
+            return payload
+        except HTTPException as he:
+            raise he
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error validando permisos: {str(e)}")
+        finally:
+            cursor.close()
+            conn.close()
+    return dependency

@@ -13,15 +13,11 @@ from ..models import (
     TenantPayload,
     AuthNodePayload
 )
-from ..auth import verify_admin_token, hash_password, get_current_user_profiles
+from ..auth import verify_admin_token, hash_password, get_current_user_profiles, verify_profile_access
 
-router = APIRouter(prefix="/api/v1/admin", tags=["Administration"], dependencies=[Depends(verify_admin_token)])
+router = APIRouter(prefix="/api/v1/admin", tags=["Administration"])
 
-def verify_infra_manager(profiles: List[str] = Depends(get_current_user_profiles)):
-    """Verifica que el usuario posea el perfil de gestión de infraestructura o rol admin."""
-    return True
-
-@router.get("/catalogs")
+@router.get("/catalogs", dependencies=[Depends(verify_any_user_token := verify_profile_access("users_manager"))])
 def get_catalogs():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -45,7 +41,8 @@ def get_catalogs():
         cursor.close()
         conn.close()
 
-@router.get("/users")
+# --- USERS (users_manager) ---
+@router.get("/users", dependencies=[Depends(verify_profile_access("users_manager"))])
 def get_users():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -74,7 +71,7 @@ def get_users():
         cursor.close()
         conn.close()
 
-@router.post("/users")
+@router.post("/users", dependencies=[Depends(verify_profile_access("users_manager"))])
 def create_user(payload: UserCreateRequest):
     if payload.password_confirm and payload.password != payload.password_confirm:
         raise HTTPException(status_code=400, detail="Las contraseñas no coinciden.")
@@ -112,7 +109,7 @@ def create_user(payload: UserCreateRequest):
         cursor.close()
         conn.close()
 
-@router.put("/users/{user_id}")
+@router.put("/users/{user_id}", dependencies=[Depends(verify_profile_access("users_manager"))])
 def update_user(user_id: int, payload: UserUpdateRequest):
     if payload.password and payload.password_confirm and payload.password != payload.password_confirm:
         raise HTTPException(status_code=400, detail="Las contraseñas no coinciden.")
@@ -157,7 +154,7 @@ def update_user(user_id: int, payload: UserUpdateRequest):
         cursor.close()
         conn.close()
 
-@router.delete("/users/{user_id}")
+@router.delete("/users/{user_id}", dependencies=[Depends(verify_profile_access("users_manager"))])
 def delete_user(user_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -171,7 +168,8 @@ def delete_user(user_id: int):
         cursor.close()
         conn.close()
 
-@router.get("/tenants")
+# --- TENANTS (tenants_manager) ---
+@router.get("/tenants", dependencies=[Depends(verify_profile_access("tenants_manager"))])
 def get_tenants_admin():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -190,7 +188,7 @@ def get_tenants_admin():
         cursor.close()
         conn.close()
 
-@router.post("/tenants")
+@router.post("/tenants", dependencies=[Depends(verify_profile_access("tenants_manager"))])
 def create_tenant(payload: TenantPayload):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -209,7 +207,7 @@ def create_tenant(payload: TenantPayload):
         cursor.close()
         conn.close()
 
-@router.put("/tenants/{tenant_id}")
+@router.put("/tenants/{tenant_id}", dependencies=[Depends(verify_profile_access("tenants_manager"))])
 def update_tenant(tenant_id: int, payload: TenantPayload):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -227,7 +225,7 @@ def update_tenant(tenant_id: int, payload: TenantPayload):
         cursor.close()
         conn.close()
 
-@router.delete("/tenants/{tenant_id}")
+@router.delete("/tenants/{tenant_id}", dependencies=[Depends(verify_profile_access("tenants_manager"))])
 def delete_tenant(tenant_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -241,7 +239,8 @@ def delete_tenant(tenant_id: int):
         cursor.close()
         conn.close()
 
-@router.get("/roles")
+# --- ROLES (roles_manager) ---
+@router.get("/roles", dependencies=[Depends(verify_profile_access("roles_manager"))])
 def get_roles_admin():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -269,7 +268,7 @@ def get_roles_admin():
         cursor.close()
         conn.close()
 
-@router.post("/roles")
+@router.post("/roles", dependencies=[Depends(verify_profile_access("roles_manager"))])
 def create_role(payload: RoleCreateUpdatePayload):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -300,7 +299,7 @@ def create_role(payload: RoleCreateUpdatePayload):
         cursor.close()
         conn.close()
 
-@router.put("/roles/{role_id}")
+@router.put("/roles/{role_id}", dependencies=[Depends(verify_profile_access("roles_manager"))])
 def update_role(role_id: int, payload: RoleCreateUpdatePayload):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -332,7 +331,7 @@ def update_role(role_id: int, payload: RoleCreateUpdatePayload):
         cursor.close()
         conn.close()
 
-@router.delete("/roles/{role_id}")
+@router.delete("/roles/{role_id}", dependencies=[Depends(verify_profile_access("roles_manager"))])
 def delete_role(role_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -347,7 +346,8 @@ def delete_role(role_id: int):
         cursor.close()
         conn.close()
 
-@router.get("/profiles")
+# --- PROFILES (profile_manager) ---
+@router.get("/profiles", dependencies=[Depends(verify_profile_access("profile_manager"))])
 def get_profiles_admin():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -360,12 +360,13 @@ def get_profiles_admin():
         cursor.close()
         conn.close()
 
-@router.post("/profiles")
+@router.post("/profiles", dependencies=[Depends(verify_profile_access("profile_manager"))])
 def create_profile(payload: ProfileCreateUpdatePayload):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO profiles (code, name, description) VALUES (%s, %s, %s) RETURNING id;", (payload.code, payload.name, payload.description))
+        code = payload.code if payload.code else payload.name.lower().replace(" ", "_")
+        cursor.execute("INSERT INTO profiles (code, name, description) VALUES (%s, %s, %s) RETURNING id;", (code, payload.name, payload.description))
         profile_id = cursor.fetchone()[0]
         conn.commit()
         return {"status": "success", "message": "Perfil creado correctamente", "id": profile_id}
@@ -376,12 +377,13 @@ def create_profile(payload: ProfileCreateUpdatePayload):
         cursor.close()
         conn.close()
 
-@router.put("/profiles/{profile_id}")
+@router.put("/profiles/{profile_id}", dependencies=[Depends(verify_profile_access("profile_manager"))])
 def update_profile(profile_id: int, payload: ProfileCreateUpdatePayload):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("UPDATE profiles SET code = %s, name = %s, description = %s WHERE id = %s;", (payload.code, payload.name, payload.description, profile_id))
+        code = payload.code if payload.code else payload.name.lower().replace(" ", "_")
+        cursor.execute("UPDATE profiles SET code = %s, name = %s, description = %s WHERE id = %s;", (code, payload.name, payload.description, profile_id))
         conn.commit()
         return {"status": "success", "message": "Perfil actualizado correctamente"}
     except Exception as e:
@@ -391,7 +393,7 @@ def update_profile(profile_id: int, payload: ProfileCreateUpdatePayload):
         cursor.close()
         conn.close()
 
-@router.delete("/profiles/{profile_id}")
+@router.delete("/profiles/{profile_id}", dependencies=[Depends(verify_profile_access("profile_manager"))])
 def delete_profile(profile_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -404,7 +406,8 @@ def delete_profile(profile_id: int):
         cursor.close()
         conn.close()
 
-@router.get("/infra")
+# --- INFRASTRUCTURE (infra_manager) ---
+@router.get("/infra", dependencies=[Depends(verify_profile_access("infra_manager"))])
 def get_infra_nodes():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -429,7 +432,7 @@ def get_infra_nodes():
         cursor.close()
         conn.close()
 
-@router.post("/infra")
+@router.post("/infra", dependencies=[Depends(verify_profile_access("infra_manager"))])
 def create_infra_node(payload: AuthNodePayload):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -449,7 +452,7 @@ def create_infra_node(payload: AuthNodePayload):
         cursor.close()
         conn.close()
 
-@router.put("/infra/{node_id}")
+@router.put("/infra/{node_id}", dependencies=[Depends(verify_profile_access("infra_manager"))])
 def update_infra_node(node_id: int, payload: AuthNodePayload):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -472,7 +475,7 @@ def update_infra_node(node_id: int, payload: AuthNodePayload):
         cursor.close()
         conn.close()
 
-@router.delete("/infra/{node_id}")
+@router.delete("/infra/{node_id}", dependencies=[Depends(verify_profile_access("infra_manager"))])
 def delete_infra_node(node_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -484,7 +487,7 @@ def delete_infra_node(node_id: int):
         cursor.close()
         conn.close()
 
-@router.post("/infra/{node_id}/update")
+@router.post("/infra/{node_id}/update", dependencies=[Depends(verify_profile_access("infra_manager"))])
 def run_infra_ansible_update(node_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
