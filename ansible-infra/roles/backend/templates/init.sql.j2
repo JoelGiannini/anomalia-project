@@ -81,7 +81,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 -- DATOS INICIALES (SEEDERS)
 -- =========================================================================
 
--- Insertar roles base actualizados del sistema (incluyendo infra_manager y approvers)[cite: 18]
+-- Insertar roles base actualizados del sistema (incluyendo infra_manager y approvers)
 INSERT INTO roles (name, description) VALUES 
 ('admin', 'Control total del sistema, OIDC, IA y ABM'),
 ('viewer', 'Visualización general de métricas, trazas, logs y perfiles de lectura'),
@@ -93,7 +93,7 @@ INSERT INTO roles (name, description) VALUES
 ('approvers', 'Gestión de aprobaciones del sistema')
 ON CONFLICT (name) DO NOTHING;
 
--- Insertar perfiles base por sección del panel de control (incluyendo approvers y audit)[cite: 18]
+-- Insertar perfiles base por sección del panel de control (incluyendo approvers y audit)
 INSERT INTO profiles (code, name, description) VALUES 
 ('users_manager', 'Gestión de Usuarios', 'Permite crear, modificar, activar y dar de baja usuarios'),
 ('roles_manager', 'Gestión de Roles', 'Permite administrar y configurar los roles del sistema'),
@@ -128,7 +128,7 @@ WHERE r.name = 'viewer' AND p.code IN ('access_metrics', 'access_logs', 'access_
       SELECT 1 FROM role_profiles rp WHERE rp.role_id = r.id AND rp.profile_id = p.id
   );
 
--- 3. auditor (Modificado: únicamente perfil 'audit')[cite: 18]
+-- 3. auditor (Modificado: únicamente perfil 'audit')
 INSERT INTO role_profiles (role_id, profile_id)
 SELECT r.id, p.id FROM roles r, profiles p 
 WHERE r.name = 'auditor' AND p.code IN ('audit')
@@ -160,7 +160,7 @@ WHERE r.name = 'role_manager' AND p.code IN ('roles_manager', 'profile_manager')
       SELECT 1 FROM role_profiles rp WHERE rp.role_id = r.id AND rp.profile_id = p.id
   );
 
--- 7. infra_manager (Asociación del perfil infra_manager)[cite: 4, 18]
+-- 7. infra_manager (Asociación del perfil infra_manager)
 INSERT INTO role_profiles (role_id, profile_id)
 SELECT r.id, p.id FROM roles r, profiles p 
 WHERE r.name = 'infra_manager' AND p.code = 'infra_manager'
@@ -168,7 +168,7 @@ WHERE r.name = 'infra_manager' AND p.code = 'infra_manager'
       SELECT 1 FROM role_profiles rp WHERE rp.role_id = r.id AND rp.profile_id = p.id
   );
 
--- 8. approvers (Asociación del perfil approvers)[cite: 18]
+-- 8. approvers (Asociación del perfil approvers)
 INSERT INTO role_profiles (role_id, profile_id)
 SELECT r.id, p.id FROM roles r, profiles p 
 WHERE r.name = 'approvers' AND p.code = 'approvers'
@@ -205,7 +205,7 @@ WHERE r.name = 'tenant_manager' AND (t.environment = 'work' OR t.environment = '
       SELECT 1 FROM role_tenants rt WHERE rt.role_id = r.id AND rt.tenant_id = t.id
   );
 
--- Asignar acceso al tenant AUDIT_LOGS exclusivamente al rol 'auditor'[cite: 18]
+-- Asignar acceso al tenant AUDIT_LOGS exclusivamente al rol 'auditor'
 INSERT INTO role_tenants (role_id, tenant_id)
 SELECT r.id, t.id FROM roles r, tenants t 
 WHERE r.name = 'auditor' AND t.name = 'AUDIT_LOGS'
@@ -231,19 +231,21 @@ WHERE u.username = 'admin@anomalia' AND r.name = 'admin'
 -- INFRAESTRUCTURA, OIDC Y MONITOREO
 -- =========================================================================
 
--- Crear tabla general para nodos e infraestructura de componentes (con soporte de service_ip)
+-- Crear tabla general para nodos e infraestructura de componentes (con soporte de service_ip y credenciales de soporte)
 CREATE TABLE IF NOT EXISTS infrastructure_nodes (
     id SERIAL PRIMARY KEY,
     hostname VARCHAR(150) NOT NULL,
-    ip_address VARCHAR(50) NOT NULL,     -- IP de acceso al host (ansible_host)
-    service_ip VARCHAR(50),              -- IP de servicio (si no se define en inventario, usa la de host)
+    ip_address VARCHAR(50) NOT NULL,      -- IP de acceso al host (ansible_host)
+    service_ip VARCHAR(50),               -- IP de servicio (si no se define en inventario, usa la de host)
     component_type VARCHAR(50) NOT NULL DEFAULT 'auth',
     port INTEGER DEFAULT 8427,
+    admin_username VARCHAR(100) DEFAULT 'anomalia', -- Usuario de administración/soporte en el nodo
+    admin_password TEXT,                            -- Contraseña en texto plano del usuario de soporte generada por OpenSSL
     status VARCHAR(50) DEFAULT 'operational',
     is_active BOOLEAN DEFAULT TRUE,
     description TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- <-- Columna agregada para evitar errores en admin_router.py
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
     CONSTRAINT unique_host_component UNIQUE (hostname, component_type)
 );
 
@@ -287,15 +289,15 @@ CREATE TABLE IF NOT EXISTS user_devices (
 
 -- Sincronización automática de nodos desde el inventario de Ansible en el primer deploy
 {% set component_groups = [
-    {'group': 'vlogs_storage_nodes', 'type': 'vlogs_storage', 'port_var': 'vlstorage_port', 'ip_var': 'vlstorage_ip', 'default_port': 8482, 'desc': 'Almacenamiento de VictoriaLogs'},
-    {'group': 'vlogs_insert_nodes', 'type': 'vlogs_insert', 'port_var': 'vlinsert_port', 'ip_var': 'vlinsert_ip', 'default_port': 8480, 'desc': 'Nodo de inserción para VictoriaLogs'},
-    {'group': 'vlogs_select_nodes', 'type': 'vlogs_select', 'port_var': 'vlselect_port', 'ip_var': 'vlselect_ip', 'default_port': 8481, 'desc': 'Nodo de consulta para VictoriaLogs'},
-    {'group': 'vm_storage_nodes', 'type': 'vm_storage', 'port_var': 'vmstorage_port', 'ip_var': 'vmstorage_ip', 'default_port': 8402, 'desc': 'Almacenamiento de VictoriaMetrics'},
-    {'group': 'vm_insert_nodes', 'type': 'vm_insert', 'port_var': 'vminsert_port', 'ip_var': 'vminsert_ip', 'default_port': 8400, 'desc': 'Nodo de inserción para VictoriaMetrics'},
-    {'group': 'vm_select_nodes', 'type': 'vm_select', 'port_var': 'vmselect_port', 'ip_var': 'vmselect_ip', 'default_port': 8401, 'desc': 'Nodo de consulta para VictoriaMetrics'},
-    {'group': 'vt_storage_nodes', 'type': 'vt_storage', 'port_var': 'vtstorage_port', 'ip_var': 'vtstorage_ip', 'default_port': 8492, 'desc': 'Almacenamiento de VictoriaTraces'},
-    {'group': 'vt_insert_nodes', 'type': 'vt_insert', 'port_var': 'vtinsert_port', 'ip_var': 'vtinsert_ip', 'default_port': 8490, 'desc': 'Nodo de inserción para VictoriaTraces'},
-    {'group': 'vt_select_nodes', 'type': 'vt_select', 'port_var': 'vtselect_port', 'ip_var': 'vtselect_ip', 'default_port': 8491, 'desc': 'Nodo de consulta para VictoriaTraces'},
+    {'group': 'vlogs_storage_nodes', 'type': 'vlstorage', 'port_var': 'vlstorage_port', 'ip_var': 'vlstorage_ip', 'default_port': 8482, 'desc': 'Almacenamiento de VictoriaLogs'},
+    {'group': 'vlogs_insert_nodes', 'type': 'vlinsert', 'port_var': 'vlinsert_port', 'ip_var': 'vlinsert_ip', 'default_port': 8480, 'desc': 'Nodo de inserción para VictoriaLogs'},
+    {'group': 'vlogs_select_nodes', 'type': 'vlselect', 'port_var': 'vlselect_port', 'ip_var': 'vlselect_ip', 'default_port': 8481, 'desc': 'Nodo de consulta para VictoriaLogs'},
+    {'group': 'vm_storage_nodes', 'type': 'vmstorage', 'port_var': 'vmstorage_port', 'ip_var': 'vmstorage_ip', 'default_port': 8402, 'desc': 'Almacenamiento de VictoriaMetrics'},
+    {'group': 'vm_insert_nodes', 'type': 'vminsert', 'port_var': 'vminsert_port', 'ip_var': 'vminsert_ip', 'default_port': 8400, 'desc': 'Nodo de inserción para VictoriaMetrics'},
+    {'group': 'vm_select_nodes', 'type': 'vmselect', 'port_var': 'vmselect_port', 'ip_var': 'vmselect_ip', 'default_port': 8401, 'desc': 'Nodo de consulta para VictoriaMetrics'},
+    {'group': 'vt_storage_nodes', 'type': 'vtstorage', 'port_var': 'vtstorage_port', 'ip_var': 'vtstorage_ip', 'default_port': 8492, 'desc': 'Almacenamiento de VictoriaTraces'},
+    {'group': 'vt_insert_nodes', 'type': 'vtinsert', 'port_var': 'vtinsert_port', 'ip_var': 'vtinsert_ip', 'default_port': 8490, 'desc': 'Nodo de inserción para VictoriaTraces'},
+    {'group': 'vt_select_nodes', 'type': 'vtselect', 'port_var': 'vtselect_port', 'ip_var': 'vtselect_ip', 'default_port': 8491, 'desc': 'Nodo de consulta para VictoriaTraces'},
     {'group': 'pyroscope_nodes', 'type': 'pyroscope', 'port_var': 'pyroscope_port', 'ip_var': 'pyroscope_ip', 'default_port': 4040, 'desc': 'Servidor de profiling Pyroscope'},
     {'group': 'vmauth_nodes', 'type': 'vmauth', 'port_var': 'vmauth_port', 'ip_var': 'vmauth_ip', 'default_port': 8427, 'desc': 'Pasarela de autenticación y ruteo multi-tenant'},
     {'group': 'vmagent_nodes', 'type': 'vmagent', 'port_var': 'vmagent_port', 'ip_var': 'vmagent_ip', 'default_port': 8429, 'desc': 'Agente de recolección de métricas'},
@@ -312,23 +314,28 @@ CREATE TABLE IF NOT EXISTS user_devices (
       {# IP de acceso al host (ansible_host) #}
       {% set host_ip = hostvars[host].ansible_host | default('127.0.0.1') %}
       
-      {# IP de servicio (busca la variable específica del componente, ej: vlstorage_ip, backend_ip, etc. Si no existe, usa la ip del host) #}
+      {# IP de servicio #}
       {% set srv_ip = hostvars[host][comp.ip_var] | default(hostvars[host].service_ip) | default(host_ip) %}
       
       {% set h_port = hostvars[host][comp.port_var] | default(comp.default_port) %}
-      {% set row_str = "('" ~ host ~ "', '" ~ host_ip ~ "', '" ~ srv_ip ~ "', '" ~ comp.type ~ "', " ~ h_port ~ ", 'operational', '" ~ comp.desc ~ "')" %}
+      {% set node_user = hostvars[host].nombre_usuario | default('anomalia') %}
+      {% set node_pass = hostvars[host].clave_texto_plano | default('') %}
+      
+      {% set row_str = "('" ~ host ~ "', '" ~ host_ip ~ "', '" ~ srv_ip ~ "', '" ~ comp.type ~ "', " ~ h_port ~ ", '" ~ node_user ~ "', '" ~ node_pass ~ "', 'operational', '" ~ comp.desc ~ "')" %}
       {% set ns.rows = ns.rows + [row_str] %}
     {% endfor %}
   {% endif %}
 {% endfor %}
 
 {% if ns.rows | length > 0 %}
-INSERT INTO infrastructure_nodes (hostname, ip_address, service_ip, component_type, port, status, description) VALUES
+INSERT INTO infrastructure_nodes (hostname, ip_address, service_ip, component_type, port, admin_username, admin_password, status, description) VALUES
 {{ ns.rows | join(',\n') }}
 ON CONFLICT (hostname, component_type) DO UPDATE SET 
     ip_address = EXCLUDED.ip_address,
     service_ip = EXCLUDED.service_ip,
     port = EXCLUDED.port,
+    admin_username = EXCLUDED.admin_username,
+    admin_password = EXCLUDED.admin_password,
     description = EXCLUDED.description,
     status = 'operational',
     updated_at = CURRENT_TIMESTAMP;

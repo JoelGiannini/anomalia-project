@@ -492,7 +492,10 @@ def run_infra_ansible_update(node_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("SELECT id, hostname, ip_address, service_ip, component_type, port, status, description FROM infrastructure_nodes WHERE id = %s;", (node_id,))
+        cursor.execute(
+            "SELECT id, hostname, ip_address, service_ip, component_type, port, status, description, admin_username, admin_password FROM infrastructure_nodes WHERE id = %s;", 
+            (node_id,)
+        )
         row = cursor.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Nodo no encontrado en la base de datos.")
@@ -503,31 +506,40 @@ def run_infra_ansible_update(node_id: int):
             "ip_address": row[2],
             "service_ip": row[3] if row[3] else row[2],
             "component_type": row[4],
-            "port": row[5]
+            "port": row[5],
+            "status": row[6],
+            "description": row[7],
+            "admin_username": row[8] if row[8] else "anomalia",
+            "admin_password": row[9] if row[9] else ""
         }
     finally:
         cursor.close()
         conn.close()
 
-    playbook_path = "/opt/anomalia/backend/playbooks/install-binaries.yml"
-    target_ip = node["service_ip"]
-    is_local = target_ip in ["127.0.0.1", "localhost", "::1"]
-    extra_vars = f'servicio={node["component_type"]} gestionar_servicios=true pyroscope_ip="{target_ip},"'
-    
+    playbook_path = "/app/playbooks/install-binaries.yml"
+    target_ip = node["ip_address"]
+    admin_user = node["admin_username"]
+    admin_pass = node["admin_password"]
+    component = node["component_type"]
+
     cmd = [
-        "sudo", "ansible-playbook",
-        "-i", "127.0.0.1,",
+        "ansible-playbook",
+        "-i", f"{target_ip},",
         playbook_path,
-        "-e", extra_vars
+        "-e", f"ansible_user={admin_user}",
+        "-e", f"servicio={component} gestionar_servicios=true"
     ]
-    
-    if is_local:
-        cmd.extend(["-e", "ansible_connection=local"])
+
+    if admin_pass:
+        cmd.extend([
+            "-e", f'ansible_password="{admin_pass}"',
+            "-e", f'ansible_become_password="{admin_pass}"'
+        ])
 
     try:
         result = subprocess.run(
             cmd,
-            cwd="/opt/anomalia/backend/playbooks",
+            cwd="/app/playbooks",
             capture_output=True,
             text=True,
             timeout=300
@@ -536,8 +548,8 @@ def run_infra_ansible_update(node_id: int):
         if result.returncode == 0:
             return {"status": "success", "message": "Playbook ejecutado exitosamente OK.", "stdout": result.stdout}
         else:
-            error_msg = result.stderr.strip() or result.stdout.strip() or "Fallo en la ejecución del playbook."
-            raise HTTPException(status_code=500, detail=error_msg)
+            error_details = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+            raise HTTPException(status_code=500, detail=error_details)
             
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail="El playbook excedió el tiempo límite de ejecución (Timeout).")

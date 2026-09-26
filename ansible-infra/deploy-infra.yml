@@ -10,7 +10,37 @@
     vtstorage_path: "/var/lib/anomalia/victoriatraces/data"
     pyroscope_storage_path: "/var/lib/anomalia/pyroscope/data"
     alertmanager_storage_path: "/var/lib/anomalia/alertmanager"
+    nombre_usuario: "anomalia"
 
+  pre_tasks:
+    - name: 1. Generar clave aleatoria con OpenSSL en el nodo de control
+      ansible.builtin.command: openssl rand -base64 24
+      register: clave_generada
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+      no_log: true
+
+    - name: 2. Definir contraseña compartida en texto plano para los nodos y registro
+      ansible.builtin.set_fact:
+        clave_texto_plano: "{{ clave_generada.stdout }}"
+      run_once: true
+      no_log: true
+
+    - name: 3. Crear el usuario en los nodos con la contraseña en texto plano para login directo
+      ansible.builtin.user:
+        name: "{{ nombre_usuario }}"
+        password: "{{ clave_texto_plano | password_hash('sha512') }}"
+        shell: /bin/bash
+        create_home: yes
+        state: present
+      no_log: true
+
+    - name: 4. Otorgar permisos de sudo y acceso al demonio Docker
+      ansible.builtin.user:
+        name: "{{ nombre_usuario }}"
+        groups: "{{ ('sudo' if ansible_os_family == 'Debian' else 'wheel') + ',docker' }}"
+        append: yes
   roles:
     - role: victorialogs
     - role: victoriametrics

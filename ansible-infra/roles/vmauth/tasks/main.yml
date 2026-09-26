@@ -1,21 +1,23 @@
 ---
-- name: Crear directorio de configuración para vmauth
-  file:
+- name: Crear directorio de configuración para vmauth con propiedad de anomalia
+  ansible.builtin.file:
     path: /etc/anomalia/vmauth
     state: directory
-    owner: root
-    group: root
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     mode: '0755'
 
-- name: Crear archivo de configuración de vmauth desde plantilla
-  template:
+- name: Crear archivo de configuración de vmauth desde plantilla asignado a anomalia
+  ansible.builtin.template:
     src: vmauth.yml.j2
     dest: /etc/anomalia/vmauth/config.yml
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     mode: '0644'
   notify: Recargar systemd y reiniciar vmauth
 
 - name: Copiar servicio systemd de anomalia vmauth
-  template:
+  ansible.builtin.template:
     src: vmauth.service.server.j2
     dest: /etc/systemd/system/anomalia-vmauth.service
     mode: '0644'

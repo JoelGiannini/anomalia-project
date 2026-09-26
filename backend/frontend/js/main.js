@@ -255,8 +255,11 @@ document.addEventListener("DOMContentLoaded", async () => {
             admin.openInfraModal(data);
         }
         if (e.target.closest('.btn-update-infra')) {
-            const data = JSON.parse(e.target.closest('.btn-update-infra').getAttribute('data-update-infra'));
-            admin.updateInfraNodeStatus(data.id);
+            const btnEl = e.target.closest('.btn-update-infra');
+            const infraId = btnEl.getAttribute('data-update-infra');
+            if (infraId) {
+                admin.updateInfraNodeStatus(infraId);
+            }
         }
         if (e.target.closest('.btn-delete-infra')) {
             admin.deleteInfraNode(e.target.closest('.btn-delete-infra').getAttribute('data-delete-infra'));

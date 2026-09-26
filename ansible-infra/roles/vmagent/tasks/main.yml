@@ -1,25 +1,31 @@
 ---
-- name: Crear directorio de trabajo para anomalia vmagent
-  file:
+- name: Crear directorio de trabajo para anomalia vmagent con propiedad de anomalia
+  ansible.builtin.file:
     path: /var/lib/anomalia/vmagent/data
     state: directory
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     mode: '0755'
 
-- name: Crear directorio de configuración para anomalia vmagent
-  file:
+- name: Crear directorio de configuración para anomalia vmagent con propiedad de anomalia
+  ansible.builtin.file:
     path: /etc/anomalia/vmagent
     state: directory
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     mode: '0755'
 
-- name: Generar archivo de configuración vmagent.yaml completo
-  template:
+- name: Generar archivo de configuración vmagent.yaml completo asignado a anomalia
+  ansible.builtin.template:
     src: vmagent.yaml.j2
     dest: /etc/anomalia/vmagent/vmagent.yaml
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     mode: '0644'
   notify: Recargar systemd y reiniciar vmagent
 
 - name: Copiar servicio systemd de anomalia vmagent
-  template:
+  ansible.builtin.template:
     src: vmagent.service.j2
     dest: /etc/systemd/system/anomalia-vmagent.service
     mode: '0644'

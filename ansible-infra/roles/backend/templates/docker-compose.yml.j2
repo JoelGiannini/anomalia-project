@@ -92,6 +92,9 @@ services:
     volumes:
       - /opt/anomalia/backend:/opt/anomalia/backend
       - /opt/anomalia/backend/media:/app/media
+      - /opt/anomalia/backend/playbooks:/opt/anomalia/backend/playbooks
+      - /var/run/docker.sock:/var/run/docker.sock
+    user: "root"
     labels:
       scrape: "true"
       port: "8000"

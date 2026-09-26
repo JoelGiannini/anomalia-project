@@ -97,7 +97,6 @@ export const admin = {
         const password = document.getElementById('user-input-password')?.value;
         const passwordConfirm = document.getElementById('user-input-password-confirm')?.value;
 
-        // Validación de coincidencia de contraseñas en frontend si se ingresó contraseña
         if (password || passwordConfirm) {
             if (password !== passwordConfirm) {
                 alert("Error: Las contraseñas no coinciden.");
@@ -485,14 +484,14 @@ export const admin = {
                     const serviceIp = n.service_ip || '--';
                     const nodeType = n.component_type || n.type || '--';
                     return `
-                    <div class="dynamic-card border rounded-xl p-4 flex justify-between items-center">
+                    <div class="dynamic-card border rounded-xl p-4 flex justify-between items-center" id="infra-node-card-${n.id}">
                         <div>
                             <h4 class="font-bold text-sm">${hostName} <span class="text-emerald-400 text-xs font-mono ml-2">🟢 ${n.status || 'Online'}</span></h4>
                             <p class="text-xs opacity-75">${ipAddress} | ${serviceIp} | ${nodeType}</p>
                         </div>
-                        <div class="flex items-center space-x-2">
+                        <div class="flex items-center space-x-2" id="infra-actions-${n.id}">
                             <button data-edit-infra='${safeNodeJson}' class="btn-edit-infra text-xs dynamic-card border px-2 py-1 rounded">Editar</button>
-                            <button data-update-infra='${safeNodeJson}' class="btn-update-infra text-xs dynamic-accent px-2 py-1 rounded">Update</button>
+                            <button data-update-infra='${n.id}' class="btn-update-infra text-xs dynamic-accent px-2 py-1 rounded">Update</button>
                             <button data-delete-infra="${n.id}" class="btn-delete-infra text-xs bg-red-500/20 text-red-400 border border-red-500/30 px-2 py-1 rounded">Eliminar</button>
                         </div>
                     </div>
@@ -552,18 +551,52 @@ export const admin = {
 
     async updateInfraNodeStatus(id) {
         const token = api.getToken();
+        const actionsContainer = document.getElementById(`infra-actions-${id}`);
+        if (!actionsContainer) return;
+
+        // Reemplazar botones por barra de progreso animada
+        actionsContainer.innerHTML = `
+            <div class="flex items-center space-x-2 w-48">
+                <div class="w-full bg-gray-700 rounded-full h-2.5 overflow-hidden">
+                    <div id="progress-bar-${id}" class="bg-blue-500 h-2.5 rounded-full transition-all duration-500" style="width: 15%"></div>
+                </div>
+                <span id="progress-text-${id}" class="text-xs font-mono">15%</span>
+            </div>
+        `;
+
+        let progress = 15;
+        const interval = setInterval(() => {
+            if (progress < 85) {
+                progress += 10;
+                const bar = document.getElementById(`progress-bar-${id}`);
+                const txt = document.getElementById(`progress-text-${id}`);
+                if (bar) bar.style.width = `${progress}%`;
+                if (txt) txt.innerText = `${progress}%`;
+            }
+        }, 400);
+
         try {
             const res = await fetch(`/api/v1/admin/infra/${id}/update`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
-            if (res.ok) {
-                alert("Nodo actualizado correctamente.");
+            clearInterval(interval);
+            
+            const bar = document.getElementById(`progress-bar-${id}`);
+            const txt = document.getElementById(`progress-text-${id}`);
+            if (bar) bar.style.width = '100%';
+            if (txt) txt.innerText = '100%';
+
+            setTimeout(() => {
+                if (res.ok) {
+                    alert("Playbook ejecutado y nodo actualizado correctamente.");
+                } else {
+                    alert("Actualización finalizada con observaciones.");
+                }
                 this.loadInfraNodes();
-            } else {
-                alert("Nodo sincronizado correctamente.");
-                this.loadInfraNodes();
-            }
+            }, 500);
+
         } catch (e) {
+            clearInterval(interval);
             console.error(e);
-            alert("Nodo actualizado correctamente.");
+            alert("Error de red o timeout al ejecutar la actualización del nodo.");
             this.loadInfraNodes();
         }
     },

@@ -1,26 +1,34 @@
 ---
-- name: Crear directorios de datos para Anomalia Alertmanager
-  file:
+- name: Crear directorios de datos para Anomalia Alertmanager con propiedad de anomalia
+  ansible.builtin.file:
     path: "{{ alertmanager_storage_path }}"
     state: directory
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     mode: '0755'
 
-- name: Crear directorio de configuracion para Anomalia Alertmanager
-  file:
+- name: Crear directorio de configuracion para Anomalia Alertmanager con propiedad de anomalia
+  ansible.builtin.file:
     path: /etc/anomalia/alertmanager
     state: directory
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     mode: '0755'
 
-- name: Copiar archivo de configuracion alertmanager.yml
-  template:
+- name: Copiar archivo de configuracion alertmanager.yml asignado a anomalia
+  ansible.builtin.template:
     src: alertmanager.yml.j2
     dest: /etc/anomalia/alertmanager/alertmanager.yml
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     mode: '0644'
-  notify: Reiniciar alertmanager
 
 - name: Copiar servicio systemd de anomalia alertmanager
-  template:
+  ansible.builtin.template:
     src: alertmanager.service.j2
     dest: /etc/systemd/system/anomalia-alertmanager.service
     mode: '0644'
-  notify: Recargar systemd y reiniciar alertmanager
+  notify:
+    - Recargar demonio de systemd
+    - Habilitar anomalia-alertmanager
+    - Arrancar anomalia-alertmanager

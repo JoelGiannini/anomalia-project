@@ -1,12 +1,14 @@
 ---
-- name: Crear directorios de datos para Pyroscope
-  file:
+- name: Crear directorios de datos para Pyroscope con propiedad de anomalia
+  ansible.builtin.file:
     path: "{{ pyroscope_storage_path }}"
     state: directory
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     mode: '0755'
 
 - name: Copiar servicio systemd para Pyroscope
-  template:
+  ansible.builtin.template:
     src: pyroscope.service.j2
     dest: /etc/systemd/system/anomalia-pyroscope.service
     mode: '0644'

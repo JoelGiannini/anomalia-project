@@ -1,26 +1,28 @@
 ---
-- name: Crear directorios de almacenamiento para Anomalia Logs
-  file:
+- name: Crear directorios de almacenamiento para Anomalia Logs con propiedad de anomalia
+  ansible.builtin.file:
     path: "{{ vlstorage_path }}"
     state: directory
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     mode: '0755'
 
 - name: Copiar servicio systemd de anomalia vlstorage
-  template:
+  ansible.builtin.template:
     src: vlstorage.service.j2
     dest: /etc/systemd/system/anomalia-vlstorage.service
     mode: '0644'
   notify: Recargar systemd y reiniciar vlstorage
 
 - name: Copiar servicio systemd de anomalia vlinsert
-  template:
+  ansible.builtin.template:
     src: vlinsert.service.j2
     dest: /etc/systemd/system/anomalia-vlinsert.service
     mode: '0644'
   notify: Recargar systemd y reiniciar vlinsert
 
 - name: Copiar servicio systemd de anomalia vlselect
-  template:
+  ansible.builtin.template:
     src: vlselect.service.j2
     dest: /etc/systemd/system/anomalia-vlselect.service
     mode: '0644'

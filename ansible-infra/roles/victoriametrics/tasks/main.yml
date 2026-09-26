@@ -1,26 +1,28 @@
 ---
-- name: Crear directorios de almacenamiento para Anomalia Metricas
-  file:
+- name: Crear directorios de almacenamiento para Anomalia Metricas con propiedad de anomalia
+  ansible.builtin.file:
     path: "{{ vmstorage_path }}"
     state: directory
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     mode: '0755'
 
 - name: Copiar servicio systemd de anomalia vmstorage
-  template:
+  ansible.builtin.template:
     src: vmstorage.service.j2
     dest: /etc/systemd/system/anomalia-vmstorage.service
     mode: '0644'
   notify: Recargar systemd y reiniciar vmstorage
 
 - name: Copiar servicio systemd de anomalia vminsert
-  template:
+  ansible.builtin.template:
     src: vminsert.service.j2
     dest: /etc/systemd/system/anomalia-vminsert.service
     mode: '0644'
   notify: Recargar systemd y reiniciar vminsert
 
 - name: Copiar servicio systemd de anomalia vmselect
-  template:
+  ansible.builtin.template:
     src: vmselect.service.j2
     dest: /etc/systemd/system/anomalia-vmselect.service
     mode: '0644'

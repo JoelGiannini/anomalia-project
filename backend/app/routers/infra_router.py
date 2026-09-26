@@ -129,7 +129,7 @@ def run_infra_update_playbook(node_id: int):
         playbook_path = "/opt/anomalia/backend/playbooks/install-binaries.yml"
         
         cmd = [
-            "sudo", "ansible-playbook",
+            "ansible-playbook",
             "-i", "127.0.0.1,",
             playbook_path,
             "-e", f"servicio={component_type} gestionar_servicios=true",

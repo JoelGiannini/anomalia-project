@@ -8,23 +8,28 @@
   ansible.builtin.command: docker-compose down -v --remove-orphans
   args:
     chdir: "/opt/anomalia/backend"
+  become: yes
+  become_user: "{{ nombre_usuario }}"
   when: compose_file.stat.exists
   failed_when: false
   ignore_errors: true
 
-- name: Crear directorio de despliegue para el backend en el nodo
+- name: Crear directorio de despliegue para el backend asignado al usuario anomalia
   ansible.builtin.file:
     path: "/opt/anomalia/backend"
     state: directory
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     mode: '0755'
 
-- name: Crear subdirectorio local para la base de datos
+- name: Crear subdirectorio local para la base de datos con permisos de anomalia
   ansible.builtin.file:
     path: "/opt/anomalia/backend/database"
     state: directory
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     mode: '0755'
 
-# NUEVO: Comprobar si init.sql quedó creado como directorio por error y limpiarlo
 - name: Verificar si init.sql es un directorio por error previo
   ansible.builtin.stat:
     path: "/opt/anomalia/backend/database/init.sql"
@@ -36,47 +41,58 @@
     state: absent
   when: init_sql_stat.stat.isdir is defined and init_sql_stat.stat.isdir
 
-- name: Renderizar plantilla de inicialización de base de datos
+- name: Renderizar plantilla de inicialización de base de datos bajo propiedad de anomalia
   ansible.builtin.template:
     src: "init.sql.j2"
     dest: "/opt/anomalia/backend/database/init.sql"
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     mode: '0644'
 
-- name: Copiar código fuente del backend y archivos del frontend
+- name: Copiar código fuente del backend y archivos del frontend asignando propiedad a anomalia
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/../backend/"
     dest: "/opt/anomalia/backend/"
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     remote_src: no
 
 - name: Copiar plantilla de Docker Compose con integración de Pyroscope
   ansible.builtin.template:
     src: docker-compose.yml.j2
     dest: "/opt/anomalia/backend/docker-compose.yml"
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     mode: '0644'
 
-- name: Crear directorio para playbooks adicionales en el nodo
+- name: Crear directorio para playbooks adicionales en el nodo con permisos de anomalia
   ansible.builtin.file:
     path: "/opt/anomalia/backend/playbooks"
     state: directory
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     mode: '0755'
 
-- name: Copiar playbooks de despliegue e instalación al servidor
+- name: Copiar playbooks de despliegue e instalación al servidor bajo el usuario anomalia
   ansible.builtin.copy:
     src: "{{ item }}"
     dest: "/opt/anomalia/backend/playbooks/"
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
     mode: '0644'
   loop:
     - "deploy-infra.yml"
     - "install-binaries.yml"
 
-- name: Reconstruir y levantar stack de contenedores con Docker Compose
+- name: Reconstruir y levantar stack de contenedores con Docker Compose como usuario anomalia
   ansible.builtin.shell: docker-compose up -d --build
   args:
     chdir: "/opt/anomalia/backend"
+  become: yes
+  become_user: "{{ nombre_usuario }}"
   environment:
     PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/usr/bin"
   register: result
   until: result.rc == 0
   retries: 3
   delay: 10
-

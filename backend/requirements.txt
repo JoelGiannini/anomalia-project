@@ -19,3 +19,4 @@ pyroscope-io
 prometheus_client
 sqlalchemy
 python-multipart
+ansible
