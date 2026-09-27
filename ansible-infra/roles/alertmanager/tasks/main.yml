@@ -29,6 +29,4 @@
     dest: /etc/systemd/system/anomalia-alertmanager.service
     mode: '0644'
   notify:
-    - Recargar demonio de systemd
-    - Habilitar anomalia-alertmanager
-    - Arrancar anomalia-alertmanager
+    - Recargar systemd, habilitar y reiniciar anomalia-alertmanager

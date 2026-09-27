@@ -1,15 +1,7 @@
 ---
-- name: Recargar systemd, Habilitar y levantar alertmanager
-  block:
-    - name: Recargar demonio de systemd
-      command: sudo systemctl daemon-reload
-
-    - name: Habilitar anomalia-alertmanager
-      command: sudo systemctl enable --now anomalia-alertmanager.service
-
-    - name: Habilitar 
-      command: sudo systemctl enable --now anomalia-alertmanager.service
-
-    - name: Arrancar anomalia-alertmanager
-      command: sudo systemctl start anomalia-alertmanager.service
-
+- name: Recargar systemd, habilitar y reiniciar anomalia-alertmanager
+  systemd:
+    daemon_reload: yes
+    name: anomalia-alertmanager
+    state: restarted
+    enabled: yes
