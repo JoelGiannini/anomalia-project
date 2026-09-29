@@ -12,6 +12,7 @@
     victoriametrics_version: "latest"
     victoriatraces_version: "latest"
     pyroscope_version: "latest"
+    parser_version: "latest"
     alertmanager_version: "latest"
 
   tasks:

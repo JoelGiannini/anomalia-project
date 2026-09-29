@@ -57,6 +57,19 @@
     group: "{{ nombre_usuario }}"
     remote_src: no
 
+- name: Crear directorio de certificados SSL si no existe
+  ansible.builtin.file:
+    path: "/opt/anomalia/certs"
+    state: directory
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
+    mode: '0755'
+
+- name: Verificar si existen certificados SSL
+  ansible.builtin.stat:
+    path: "/opt/anomalia/certs/fullchain.pem"
+  register: cert_file
+
 - name: Copiar plantilla de Docker Compose con integración de Pyroscope
   ansible.builtin.template:
     src: docker-compose.yml.j2
@@ -73,7 +86,15 @@
     group: "{{ nombre_usuario }}"
     mode: '0755'
 
-- name: Copiar playbooks de despliegue e instalación al servidor bajo el usuario anomalia
+- name: Copiar roles de Ansible al directorio de playbooks
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/roles/"
+    dest: "/opt/anomalia/backend/playbooks/roles/"
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
+    remote_src: no
+
+- name: Copiar playbooks de instalación al servidor bajo el usuario anomalia
   ansible.builtin.copy:
     src: "{{ item }}"
     dest: "/opt/anomalia/backend/playbooks/"
@@ -81,7 +102,6 @@
     group: "{{ nombre_usuario }}"
     mode: '0644'
   loop:
-    - "deploy-infra.yml"
     - "install-binaries.yml"
 
 - name: Reconstruir y levantar stack de contenedores con Docker Compose como usuario anomalia

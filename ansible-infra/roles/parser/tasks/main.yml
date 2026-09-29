@@ -3,22 +3,22 @@
   ansible.builtin.file:
     path: "/opt/anomalia/parser"
     state: directory
-    owner: "{{ nombre_usuario }}"
-    group: "{{ nombre_usuario }}"
+    owner: "{{ nombre_username }}"
+    group: "{{ nombre_username }}"
     mode: '0755'
 
 - name: Copiar plantilla de Docker Compose para el parser con permisos de anomalia
   ansible.builtin.template:
     src: docker-compose.yml.j2
     dest: "/opt/anomalia/parser/docker-compose.yml"
-    owner: "{{ nombre_usuario }}"
-    group: "{{ nombre_usuario }}"
+    owner: "{{ nombre_username }}"
+    group: "{{ nombre_username }}"
     mode: '0644'
 
 - name: Asegurar que se descargue la última versión de la imagen
   ansible.builtin.shell: docker pull {{ parser_image }}
   become: yes
-  become_user: "{{ nombre_usuario }}"
+  become_user: "{{ nombre_username }}"
   environment:
     PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/usr/bin"
   register: pull_result
@@ -29,7 +29,7 @@
   args:
     chdir: "/opt/anomalia/parser"
   become: yes
-  become_user: "{{ nombre_usuario }}"
+  become_user: "{{ nombre_username }}"
   environment:
     PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/usr/bin"
   changed_when: false
@@ -39,7 +39,7 @@
   args:
     chdir: "/opt/anomalia/parser"
   become: yes
-  become_user: "{{ nombre_usuario }}"
+  become_user: "{{ nombre_username }}"
   environment:
     PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/usr/bin"
   register: result

@@ -45,27 +45,6 @@ def get_infra_nodes():
         cursor.close()
         conn.close()
 
-@router.post("/", dependencies=[Depends(verify_infra_manager)])
-def create_infra_node(payload: AuthNodePayload):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        svc_ip = payload.service_ip if payload.service_ip else payload.ip_address
-        cursor.execute(
-            """INSERT INTO infrastructure_nodes (hostname, ip_address, service_ip, component_type, port, status, description) 
-               VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id;""",
-            (payload.hostname, payload.ip_address, svc_ip, payload.component_type, payload.port, payload.status, payload.description)
-        )
-        node_id = cursor.fetchone()[0]
-        conn.commit()
-        return {"status": "success", "message": "Nodo creado correctamente", "id": node_id}
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        cursor.close()
-        conn.close()
-
 @router.put("/{node_id}", dependencies=[Depends(verify_infra_manager)])
 def update_infra_node(node_id: int, payload: AuthNodePayload):
     conn = get_db_connection()

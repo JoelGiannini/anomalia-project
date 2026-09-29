@@ -5,6 +5,8 @@
 .theme-light-blue { --bg-main: #f0f4f8; --bg-card: #ffffff; --bg-card-hover: #e2e8f0; --text-main: #1e293b; --text-muted: #64748b; --border-color: #cbd5e1; --accent: #0ea5e9; --accent-hover: #0284c7; }
 .theme-light-emerald { --bg-main: #f4f5f7; --bg-card: #ffffff; --bg-card-hover: #e9ecef; --text-main: #212529; --text-muted: #6c757d; --border-color: #dee2e6; --accent: #10b981; --accent-hover: #059669; }
 .theme-light { --bg-main: #f8fafc; --bg-card: #ffffff; --bg-card-hover: #f1f5f9; --text-main: #0f172a; --text-muted: #64748b; --border-color: #cbd5e1; --accent: #2563eb; --accent-hover: #1d4ed8; }
+.theme-blanco-clasico { --bg-main: #ffffff; --bg-card: #f7f7f7; --bg-card-hover: #eeeeee; --text-main: #222222; --text-muted: #666666; --border-color: #cccccc; --accent: #333333; --accent-hover: #111111; }
+.theme-gris { --bg-main: #374151; --bg-card: #4b5563; --bg-card-hover: #6b7280; --text-main: #f3f4f6; --text-muted: #d1d5db; --border-color: #6b7280; --accent: #9ca3af; --accent-hover: #d1d5db; }
 
 body { background-color: var(--bg-main); color: var(--text-main); }
 .dynamic-card { background-color: var(--bg-card); border-color: var(--border-color); }

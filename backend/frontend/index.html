@@ -347,7 +347,6 @@
                         <div class="flex justify-between items-center mb-6">
                             <h2 class="text-xl font-bold flex items-center space-x-2"><i class="fa-solid fa-server dynamic-text-accent"></i><span>Infraestructura y Nodos</span></h2>
                             <div class="space-x-2">
-                                <button id="btn-open-infra-modal" class="dynamic-accent text-xs px-4 py-2 rounded-lg transition"><i class="fa-solid fa-plus mr-1"></i> Agregar Nodo</button>
                                 <button id="btn-refresh-infra" class="dynamic-card border text-xs px-3 py-2 rounded-lg transition hover:opacity-80"><i class="fa-solid fa-rotate-right mr-1"></i> Actualizar</button>
                             </div>
                         </div>
@@ -575,7 +574,7 @@
     <div id="modal-infra" class="fixed inset-0 bg-black/50 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
         <div class="dynamic-card border rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4">
             <div class="flex justify-between items-center border-b pb-3 dynamic-border">
-                <h3 class="text-lg font-bold">Gestión de Nodo Infraestructura</h3>
+                <h3 class="text-lg font-bold">Editar Nodo de Infraestructura</h3>
                 <button data-modal="modal-infra" class="close-modal-btn opacity-75 hover:opacity-100"><i class="fa-solid fa-xmark"></i></button>
             </div>
             <input type="hidden" id="infra-id">
@@ -594,11 +593,9 @@
                 </div>
                 <div>
                     <label class="block text-xs uppercase opacity-75 mb-1">Tipo</label>
-                    <input type="text" id="infra-input-type" class="w-full dynamic-input border rounded-xl px-3 py-2" placeholder="ej: production, worker">
-                </div>
-                <div>
-                    <label class="block text-xs uppercase opacity-75 mb-1">Sistema Operativo</label>
-                    <input type="text" id="infra-input-os" class="w-full dynamic-input border rounded-xl px-3 py-2" value="RHEL 9">
+                    <select id="infra-input-type" class="w-full dynamic-input border rounded-xl px-3 py-2">
+                        <option value="">Seleccionar...</option>
+                    </select>
                 </div>
             </div>
             <div class="flex justify-end space-x-2 pt-3 border-t dynamic-border">

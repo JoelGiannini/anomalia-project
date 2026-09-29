@@ -76,6 +76,7 @@ services:
     ports:
       - "80:8000"
       - "8000:8000"
+      - "443:8000"
     environment:
       - DATABASE_URL=postgresql://anomal_user:anomal_password@postgres:5432/anomal_db
       - AI_PROVIDER=ollama
@@ -94,6 +95,9 @@ services:
       - /opt/anomalia/backend/media:/app/media
       - /opt/anomalia/backend/playbooks:/opt/anomalia/backend/playbooks
       - /var/run/docker.sock:/var/run/docker.sock
+    command: >
+      uvicorn app.main:app --host 0.0.0.0 --port 8000
+      {{ '--ssl-keyfile /certs/privkey.pem --ssl-certfile /certs/fullchain.pem' if cert_file.stat.exists else '' }}
     user: "root"
     labels:
       scrape: "true"

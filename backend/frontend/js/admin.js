@@ -506,14 +506,31 @@ export const admin = {
         }
     },
 
-    openInfraModal(n = null) {
+    async openInfraModal(n = null) {
         const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
         setVal('infra-id', n ? n.id : '');
         setVal('infra-input-name', n ? (n.hostname || n.host || n.name || '') : '');
         setVal('infra-input-ip', n ? n.ip_address : '');
         setVal('infra-input-service-ip', n ? n.service_ip : '');
         setVal('infra-input-type', n ? (n.component_type || n.type || '') : '');
-        setVal('infra-input-os', n ? n.os : 'RHEL 9');
+
+        try {
+            const res = await fetch('/api/v1/admin/infra/component-types', {
+                headers: { 'Authorization': `Bearer ${api.getToken()}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                const select = document.getElementById('infra-input-type');
+                select.innerHTML = '<option value="">Seleccionar...</option>' +
+                    data.component_types.map(t => `<option value="${t.value}">${t.label}</option>`).join('');
+                if (n && n.component_type) {
+                    select.value = n.component_type;
+                }
+            }
+        } catch (e) {
+            console.error(e);
+        }
+
         ui.toggleModal('modal-infra', true);
     },
 
@@ -523,17 +540,24 @@ export const admin = {
         const ip_address = document.getElementById('infra-input-ip')?.value;
         const service_ip = document.getElementById('infra-input-service-ip')?.value;
         const component_type = document.getElementById('infra-input-type')?.value;
-        const os = document.getElementById('infra-input-os')?.value;
         const token = api.getToken();
 
-        const method = id ? 'PUT' : 'POST';
-        const url = id ? `/api/v1/admin/infra/${id}` : '/api/v1/admin/infra';
+        if (!id) {
+            alert("Error: no se identificó el nodo a editar.");
+            return;
+        }
+        if (!hostname || !ip_address || !component_type) {
+            alert("Error: Hostname, IP y Tipo son obligatorios.");
+            return;
+        }
+
+        const body = { hostname, ip_address, service_ip, component_type };
 
         try {
-            const res = await fetch(url, {
-                method,
+            const res = await fetch(`/api/v1/admin/infra/${id}`, {
+                method: 'PUT',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ hostname, ip_address, service_ip, component_type, os })
+                body: JSON.stringify(body)
             });
 
             if (res.ok) {
@@ -541,7 +565,7 @@ export const admin = {
                 this.loadInfraNodes();
             } else {
                 const err = await res.json();
-                alert("Error: " + (err.detail || "No se pudo guardar el nodo."));
+                alert(err.detail || "No se pudo guardar el nodo.");
             }
         } catch (e) {
             console.error(e);

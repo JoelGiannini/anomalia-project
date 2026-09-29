@@ -207,7 +207,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById('btn-open-tenant-modal')?.addEventListener('click', () => admin.openTenantModal());
     document.getElementById('btn-open-role-modal')?.addEventListener('click', () => admin.openRoleModal());
     document.getElementById('btn-open-profile-modal')?.addEventListener('click', () => admin.openProfileModal());
-    document.getElementById('btn-open-infra-modal')?.addEventListener('click', () => admin.openInfraModal());
 
     document.getElementById('btn-refresh-users')?.addEventListener('click', () => admin.loadUsers());
     document.getElementById('btn-refresh-tenants')?.addEventListener('click', () => admin.loadTenantsAdmin());

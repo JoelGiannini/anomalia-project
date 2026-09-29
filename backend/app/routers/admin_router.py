@@ -407,6 +407,26 @@ def delete_profile(profile_id: int):
         conn.close()
 
 # --- INFRASTRUCTURE (infra_manager) ---
+@router.get("/infra/component-types", dependencies=[Depends(verify_profile_access("infra_manager"))])
+def get_component_types():
+    return {
+        "component_types": [
+            {"value": "vminsert", "label": "VictoriaMetrics Insert"},
+            {"value": "vmselect", "label": "VictoriaMetrics Select"},
+            {"value": "vmstorage", "label": "VictoriaMetrics Storage"},
+            {"value": "vlogs_insert", "label": "VictoriaLogs Insert"},
+            {"value": "vlogs_select", "label": "VictoriaLogs Select"},
+            {"value": "vlogs_storage", "label": "VictoriaLogs Storage"},
+            {"value": "alertmanager", "label": "Alertmanager"},
+            {"value": "vmalert", "label": "VMAlert"},
+            {"value": "vmauth", "label": "VMAuth"},
+            {"value": "vmagent", "label": "VMAgent"},
+            {"value": "pyroscope", "label": "Pyroscope"},
+            {"value": "parser", "label": "Parser"},
+            {"value": "backend", "label": "Backend"}
+        ]
+    }
+
 @router.get("/infra", dependencies=[Depends(verify_profile_access("infra_manager"))])
 def get_infra_nodes():
     conn = get_db_connection()
@@ -428,26 +448,6 @@ def get_infra_nodes():
                 "updated_at": str(r[8]) if r[8] else None
             })
         return {"nodes": nodes}
-    finally:
-        cursor.close()
-        conn.close()
-
-@router.post("/infra", dependencies=[Depends(verify_profile_access("infra_manager"))])
-def create_infra_node(payload: AuthNodePayload):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        svc_ip = payload.service_ip if payload.service_ip else payload.ip_address
-        cursor.execute(
-            "INSERT INTO infrastructure_nodes (hostname, ip_address, service_ip, component_type, port, status, description) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id;",
-            (payload.hostname, payload.ip_address, svc_ip, payload.component_type, payload.port, payload.status, payload.description)
-        )
-        node_id = cursor.fetchone()[0]
-        conn.commit()
-        return {"status": "success", "message": "Nodo creado correctamente", "id": node_id}
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
     finally:
         cursor.close()
         conn.close()

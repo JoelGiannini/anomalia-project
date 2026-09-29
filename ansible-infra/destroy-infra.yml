@@ -74,3 +74,44 @@
         - /var/lib/anomalia
         - /etc/anomalia
         - /opt/anomalia
+
+    - name: Eliminar binarios instalados en /usr/local/bin
+      ansible.builtin.file:
+        path: "/usr/local/bin/{{ item }}"
+        state: absent
+      loop:
+        - vmstorage
+        - vminsert
+        - vmselect
+        - vlstorage
+        - vlinsert
+        - vlselect
+        - vtstorage
+        - vtinsert
+        - vtselect
+        - vmauth
+        - vmagent
+        - vmalert
+        - alertmanager
+        - pyroscope
+        - anomalia_parser
+      ignore_errors: yes
+
+    - name: Eliminar usuario anomalia del sistema
+      ansible.builtin.user:
+        name: anomalia
+        state: absent
+        remove: yes
+      ignore_errors: yes
+
+    - name: Limpiar volúmenes Docker huérfanos
+      ansible.builtin.command: docker volume prune -f
+      ignore_errors: yes
+
+    - name: Limpiar redes Docker no usadas
+      ansible.builtin.command: docker network prune -f
+      ignore_errors: yes
+
+    - name: Limpiar imágenes Docker sin usar
+      ansible.builtin.command: docker image prune -a -f
+      ignore_errors: yes

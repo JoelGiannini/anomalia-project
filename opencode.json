@@ -1,0 +1,108 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "username": "joel",
+  "model": "opencode/longcat-2.5-preview-free",
+  "instructions": [
+    "constitution.md",
+    "AGENTS.md"
+  ],
+  "references": {
+    "specs": {
+      "path": "./specs",
+      "description": "Especificaciones técnicas ancladas del proyecto (SSD Model)"
+    },
+    "frontend_guidelines": {
+      "path": "backend/frontend",
+      "description": "Lineamientos y arquitectura modular del Frontend Vanilla JS"
+    }
+  },
+  "mcp": {
+    "postgres": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "postgresql://anomal_user:anomal_password@localhost:5432/anomal_db"
+      ],
+      "enabled": true
+    },
+    "git": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-git",
+        "/home/joel/git/anomalia-project"
+      ],
+      "enabled": true
+    },
+    "filesystem": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/home/joel/git/anomalia-project"
+      ],
+      "enabled": true
+    },
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp",
+      "headers": {
+        "Authorization": "Bearer {env:CONTEXT7_API_KEY}"
+      },
+      "enabled": true
+    }
+  },
+  "permission": {
+    "edit": "ask",
+    "bash": {
+      "git status": "allow",
+      "git diff": "allow",
+      "pytest": "allow",
+      "flutter test": "allow",
+      "ansible-playbook * --syntax-check": "allow",
+      "*": "ask"
+    }
+  },
+  "hooks": {
+    "tool.execute.before": [
+      {
+        "matcher": "bash",
+        "handler": "agent",
+        "agent": "backend-validator",
+        "condition": "command contains 'git commit'"
+      },
+      {
+        "matcher": "bash",
+        "handler": "agent",
+        "agent": "security-reviewer",
+        "condition": "command contains 'git commit'"
+      }
+    ]
+  },
+  "lsp": {
+    "pyright": {
+      "command": ["pyright-langserver", "--stdio"],
+      "extensions": [".py"]
+    },
+    "typescript": {
+      "command": ["typescript-language-server", "--stdio"],
+      "extensions": [".js"]
+    },
+    "dart": {
+      "command": ["dart", "language-server", "--protocol=lsp"],
+      "extensions": [".dart"]
+    },
+    "yaml-ls": {
+      "command": ["yaml-language-server", "--stdio"],
+      "extensions": [".yml", ".yaml"]
+    },
+    "ansible": {
+      "command": ["ansible-language-server", "--stdio"],
+      "extensions": [".yml", ".yaml"]
+    }
+  }
+}
