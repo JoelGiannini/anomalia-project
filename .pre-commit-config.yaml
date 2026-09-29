@@ -1,0 +1,24 @@
+# Hooks de pre-commit para Anomalia.
+#
+# version pinneada: nunca usar `main` ni una version flotante. Una version
+# futura con reglas mas estrictas no debe romper commits de forma inesperada.
+#
+# El hook se declara `local` a proposito, pese a que gitleaks publica uno
+# oficial. En v8.30.1 el hook upstream `gitleaks-system` viene SIN
+# `pass_filenames: false`, por lo que pre-commit le pasa los nombres de archivo
+# como argumento posicional. gitleaks intenta entonces `cd` hacia el archivo,
+# falla con "cannot change to '<archivo>'", imprime "no leaks found" y sale con
+# codigo 0: el gate pasa TODO en verde sin escanear. Verificado empiricamente.
+# Declarandolo local fijamos el comportamiento correcto.
+#
+# Si se actualiza gitleaks y upstream corrige el hook, se puede volver al
+# repo oficial. Verificar con: pre-commit run gitleaks --verbose
+
+repos:
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: Detect hardcoded secrets
+        entry: gitleaks git --pre-commit --redact --staged --verbose
+        language: system
+        pass_filenames: false

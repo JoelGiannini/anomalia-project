@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Flutter / Dart (mobile/)
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Node
+node_modules/
+
+# Secretos locales: nunca deben versionarse
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!.env.example
+
+# Basura de OS / editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Artefactos locales
+*.log
+*.sar
+*.prof
+coverage/

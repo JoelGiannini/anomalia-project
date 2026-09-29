@@ -13,6 +13,53 @@ description: Skill especializado en seguridad, RBAC, autenticación JWT/OIDC y p
 4. **HTTPS:** En producción, todos los endpoints deben usar HTTPS.
 5. **Validación de Entrada:** Validar y sanitizar todas las entradas del usuario.
 6. **Manejo de Errores:** No exponer información sensible en mensajes de error.
+7. **Secretos:** Prohibido hardcodear credenciales, API keys o tokens. Referenciar siempre por variable de entorno.
+
+## Manejo de Secretos
+
+Las credenciales **nunca** se escriben en un archivo versionado. Todo secreto se
+referencia por variable de entorno.
+
+| Contexto | Prohibido | Correcto |
+|----------|-----------|----------|
+| Config MCP / JSON | `"Authorization": "Bearer sk-real-..."` | `"Bearer {env:CONTEXT7_API_KEY}"` |
+| Python | `DB_PASSWORD = "hunter2"` | `DB_PASSWORD = os.getenv("DB_PASSWORD")` |
+| Ansible | `password: literal-en-yaml` | `password: "{{ vault_db_password }}"` o `lookup('env', ...)` |
+| Templates | valores por defecto con secreto real | placeholders `change-me` explícitos |
+
+### Gate automático
+
+`.gitleaks.toml` + `.pre-commit-config.yaml` escanean cada commit. Para correrlo
+a mano sobre todo el repo:
+
+```bash
+gitleaks dir .
+gitleaks git .          # historial completo
+```
+
+Si el hook bloquea un commit y el hallazgo es legítimo, el bypass explícito es
+`SKIP=gitleaks git commit`. No usar `--no-verify`: desactiva todos los hooks.
+
+### Variable pendiente
+
+`opencode.json` referencia `CONTEXT7_API_KEY` por entorno. Si no está definida,
+el MCP de Context7 falla sin autenticar. Definir en el shell:
+
+```bash
+export CONTEXT7_API_KEY="ctx7sk-..."
+```
+
+### Gap conocido: passwords de baja entropía
+
+gitleaks detecta credenciales de **alta entropía** y de **proveedor conocido**.
+**No** detecta passwords débiles de diccionario. Los templates de
+`ansible-infra/` contienen valores como `anomal_password`, `admin_password` y
+`change-me-secret` que el escáner no marca por diseño.
+
+Esto está registrado como riesgo aceptado, no como descuido. Si alguna vez se
+mueven esos secretos a variables de entorno, la cobertura sube sin tocar el
+gate. No agregar reglas que marquen esos paths salvo que primero se.externalicen
+los valores: producirían allowlist permanente y falsa sensación de control.
 
 ## Endpoints Protegidos
 

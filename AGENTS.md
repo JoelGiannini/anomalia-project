@@ -33,6 +33,53 @@ Este documento sirve como manual de referencia técnica para cualquier asistente
 
 ## 2. Comandos de Entorno, Compilación y Testing
 
+### 2.0 Secret Scanning (obligatorio antes de commitear)
+
+El escaneo de secretos corre como hook de `pre-commit` en cada commit. Config
+en `.gitleaks.toml` y `.pre-commit-config.yaml`. Detalle en
+`specs/006-secret-scanning-gate.md`.
+
+* **Escaneo manual del working tree:**
+  ```bash
+  gitleaks dir .
+  ```
+* **Escaneo manual del historial completo:**
+  ```bash
+  gitleaks git .
+  ```
+* **Ejecutar todos los hooks sobre el repo entero:**
+  ```bash
+  pre-commit run --all-files
+  ```
+* **Bypass de un hallazgo legítimo (preferir corregir el código):**
+  ```bash
+  SKIP=gitleaks git commit
+  ```
+
+* **Instalación** (Pop!_OS / Ubuntu, `~/.local/bin` ya en PATH):
+  ```bash
+  # gitleaks v8.30.1 linux_x64, siempre verificando el checksum oficial
+  cd /tmp && curl -sSLO https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+  curl -sSLO https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_checksums.txt
+  sha256sum -c --ignore-missing gitleaks_8.30.1_checksums.txt
+  tar xzf gitleaks_8.30.1_linux_x64.tar.gz && install -m 755 gitleaks ~/.local/bin/gitleaks
+
+  pip3 install --user pre-commit
+  pre-commit install
+  ```
+
+* **Variable de entorno requerida:** `opencode.json` referencia
+  `CONTEXT7_API_KEY`. Si no está definida, el MCP de Context7 falla sin autenticar.
+  ```bash
+  export CONTEXT7_API_KEY="ctx7sk-..."
+  ```
+
+* **Limitación conocida:** gitleaks detecta secretos de alta entropía y de
+  proveedor conocido. **No** detecta passwords débiles de diccionario. Los
+  valores `anomal_password`, `admin_password` y `change-me-secret` de
+  `ansible-infra/` quedan fuera de su alcance por diseño; están registrados
+  como riesgo aceptado en la spec.
+
 ### 2.1 Backend (FastAPI & Base de Datos)
 * **Instalación de Dependencias:**
   ```bash
