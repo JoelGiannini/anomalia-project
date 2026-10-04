@@ -1,0 +1,26 @@
+#!/bin/bash
+# Aplica el aislamiento de red de los puertos de lectura de Victoria.
+# Idempotente: reconstruye la cadena dedicada desde cero en cada ejecución,
+# sin tocar ningún otro tráfico del host.
+set -euo pipefail
+
+CHAIN="ANOMALIA_VICTORIA_READ"
+IPTABLES="$(command -v iptables || echo /usr/sbin/iptables)"
+
+# Reset idempotente: desenganchar -> vaciar -> borrar -> recrear
+"$IPTABLES" -F "$CHAIN" 2>/dev/null || true
+"$IPTABLES" -D INPUT -j "$CHAIN" 2>/dev/null || true
+"$IPTABLES" -X "$CHAIN" 2>/dev/null || true
+"$IPTABLES" -N "$CHAIN"
+"$IPTABLES" -I INPUT -j "$CHAIN"
+
+{% for port in victoria_firewall_ports %}
+{% for cidr in victoria_firewall_allowed_sources %}
+# {{ port }} -- permitido desde {{ cidr }}
+"$IPTABLES" -A "$CHAIN" -s {{ cidr }} -p tcp --dport {{ port }} -j ACCEPT
+{% endfor %}
+# {{ port }} -- todo lo demas queda denegado
+"$IPTABLES" -A "$CHAIN" -p tcp --dport {{ port }} -j DROP
+{% endfor %}
+
+exit 0

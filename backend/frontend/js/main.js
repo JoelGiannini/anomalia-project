@@ -101,10 +101,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     try {
+        ui.renderLoading();
         const tenants = await api.fetchUserTenants();
-        ui.renderTenants(tenants);
+        ui.renderTenants(tenants, state.currentUserRoles, state.currentUserProfiles);
     } catch (err) {
         console.error("Error al cargar tenants del usuario:", err);
+        alert("No se pudieron cargar los tenants autorizados: " + (err.message || err));
     }
 
     const profileBtn = document.getElementById('profile-menu-button');
@@ -139,8 +141,35 @@ document.addEventListener("DOMContentLoaded", async () => {
             if (tabName === 'roles') admin.loadRolesAdmin();
             if (tabName === 'profiles') admin.loadProfilesAdmin();
             if (tabName === 'infra') admin.loadInfraNodes();
+            if (tabName === 'ai') admin.loadAIConfig();
             if (tabName === 'approvals') admin.loadApprovals?.();
-            if (tabName === 'audit') admin.loadAuditLogs?.();
+        }
+    });
+
+    document.addEventListener('click', async (e) => {
+        const consoleBtn = e.target.closest('.btn-open-console');
+        if (!consoleBtn || consoleBtn.disabled) return;
+
+        const tenantId = Number(consoleBtn.dataset.tenantId);
+        const scope = consoleBtn.dataset.scope;
+        const label = consoleBtn.dataset.label || 'la consola';
+        if (!tenantId || !scope) return;
+
+        const original = consoleBtn.textContent;
+        consoleBtn.disabled = true;
+        consoleBtn.textContent = 'Abriendo...';
+        try {
+            // Se abre la pestana antes del await: el navegador solo permite
+            // window.open() dentro del gesto del usuario, y un fetch la perderia.
+            const tab = window.open('about:blank', '_blank');
+            const url = await api.createUiTicket(tenantId, scope);
+            if (tab) tab.location = url;
+            else window.open(url, '_blank');
+        } catch (err) {
+            alert('No se pudo abrir ' + label + ': ' + (err.message || err));
+        } finally {
+            consoleBtn.disabled = false;
+            consoleBtn.textContent = original;
         }
     });
 
@@ -219,6 +248,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById('btn-save-role')?.addEventListener('click', () => admin.saveRole());
     document.getElementById('btn-save-profile')?.addEventListener('click', () => admin.saveProfile());
     document.getElementById('btn-save-infra')?.addEventListener('click', () => admin.saveInfraNode());
+    document.getElementById('btn-save-ai')?.addEventListener('click', () => admin.saveAIConfig());
+    document.getElementById('btn-test-ai')?.addEventListener('click', () => admin.testAIProvider());
 
     document.addEventListener('click', (e) => {
         if (e.target.closest('.btn-edit-user')) {

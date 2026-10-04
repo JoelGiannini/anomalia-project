@@ -13,7 +13,7 @@ Este documento establece las reglas arquitectónicas, estándares de desarrollo 
 - Las alertas asociadas a un tenant operan de forma aislada a través de su propia configuración de evaluación (`vmalert`) y notificación (`Alertmanager`).
 
 ### 1.2 Infraestructura como Código (IaC) e Idempotencia
-- Todos los servicios del stack de observabilidad (VictoriaMetrics, VictoriaLogs, VictoriaTraces, Pyroscope, vmagent, vmauth, Alertmanager, vmalert, Parser) se despliegan y actualizan mediante roles y playbooks de **Ansible**.
+- Todos los servicios del stack de observabilidad (VictoriaMetrics, VictoriaLogs, VictoriaTraces, Pyroscope, vmagent, vmauth, Alertmanager, vmalert, Parses) se despliegan y actualizan mediante roles y playbooks de **Ansible**.
 - La base de datos (`infrastructure_nodes`) actúa como inventario fuente de verdad para el aprovisionamiento de nodos dinámicos.
 - Los playbooks y tareas deben ser estrictamente idempotentes.
 
@@ -41,8 +41,8 @@ Este documento establece las reglas arquitectónicas, estándares de desarrollo 
 - Autenticación segura mediante flujos OIDC nativos (`flutter_appauth`, `app_links`).
 - Gestión de estado transparente para el listado de alertas y recepción de notificaciones en segundo plano.
 
-### 2.4 Visualización y Dashboards (Parser)
-- El componente **Parser** es responsable de procesar, normalizar y exponer la telemetría para la renderización de dashboards dentro de la plataforma. Cualquier cambio en formatos de ingesta debe mantener compatibilidad con este módulo.
+### 2.4 Visualización y Dashboards (Parses)
+- El componente **Parses** es responsable de procesar, normalizar y exponer la telemetría para la renderización de dashboards dentro de la plataforma. Cualquier cambio en formatos de ingesta debe mantener compatibilidad con este módulo.
 
 ---
 

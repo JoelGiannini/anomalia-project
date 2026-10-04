@@ -1,7 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List
-import subprocess
-import socket
 from ..database import get_db_connection
 from ..models import AuthNodePayload
 from ..auth import verify_admin_token, get_current_user_profiles
@@ -81,63 +79,6 @@ def delete_infra_node(node_id: int):
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        cursor.close()
-        conn.close()
-
-@router.post("/{node_id}/update", dependencies=[Depends(verify_infra_manager)])
-def run_infra_update_playbook(node_id: int):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT hostname, ip_address, service_ip, component_type FROM infrastructure_nodes WHERE id = %s;", (node_id,))
-        row = cursor.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Nodo de infraestructura no encontrado en la base de datos.")
-        
-        hostname, ip_address, service_ip, component_type = row
-        target_ip = service_ip if service_ip else ip_address
-        
-        local_ips = {"127.0.0.1", "localhost", "::1"}
-        try:
-            local_ips.add(socket.gethostbyname(socket.gethostname()))
-        except Exception:
-            pass
-        
-        is_local = target_ip in local_ips or target_ip.startswith("127.")
-        playbook_path = "/opt/anomalia/backend/playbooks/install-binaries.yml"
-        
-        cmd = [
-            "ansible-playbook",
-            "-i", "127.0.0.1,",
-            playbook_path,
-            "-e", f"servicio={component_type} gestionar_servicios=true",
-            "-e", f'pyroscope_ip="{target_ip},"'
-        ]
-        
-        if is_local:
-            cmd.extend(["-e", "ansible_connection=local"])
-            
-        result = subprocess.run(
-            cmd,
-            cwd="/opt/anomalia/backend/playbooks",
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
-        
-        if result.returncode == 0:
-            return {"status": "success", "message": f"Playbook ejecutado correctamente para {component_type} en {target_ip}", "stdout": result.stdout}
-        else:
-            error_msg = result.stderr.strip() or result.stdout.strip() or "Error desconocido en Ansible"
-            raise HTTPException(status_code=500, detail=error_msg)
-            
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=504, detail="La ejecución del playbook de Ansible excedió el tiempo límite.")
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=500, detail=str(e))
     finally:
         cursor.close()
         conn.close()

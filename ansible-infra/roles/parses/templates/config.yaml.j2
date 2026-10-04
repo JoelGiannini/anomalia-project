@@ -1,0 +1,14 @@
+# Config de Perses servido al contenedor anomalia_parses.
+# El entrypoint de la imagen es: /bin/perses --config=/etc/perses/config.yaml
+# Solo se declaran los valores que difieren de los defaults de Perses 0.55:
+# el resto (security, plugin.path, frontend.auto_refresh, ...) usa defaults.
+database:
+  file:
+    folder: "/perses"
+    extension: "json"
+
+frontend:
+  explorer:
+    # /explore: página nativa de Perses con selector de profile type (Pyroscope),
+    # datasources del proyecto y editor de queries en modo solo consulta.
+    enable: {{ parses_explorer_enable | lower }}

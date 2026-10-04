@@ -45,31 +45,6 @@ services:
       - aiops-net
     restart: unless-stopped
 
-  keycloak:
-    image: quay.io/keycloak/keycloak:24.0.1
-    container_name: anomalia_keycloak
-    environment:
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin_password
-      KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://postgres:5432/anomal_db
-      KC_DB_USERNAME: anomal_user
-      KC_DB_PASSWORD: anomal_password
-      KC_HOSTNAME: anomalia.local
-      KC_HOSTNAME_PORT: 8080
-      KC_HTTP_ENABLED: "true"
-      KC_HOSTNAME_STRICT: "false"
-      KC_HOSTNAME_STRICT_HTTPS: "false"
-    ports:
-      - "8080:8080"
-    command: start-dev
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - aiops-net
-    restart: unless-stopped
-
   anomaliagw:
     build: ./backend
     container_name: anomalia_gw
@@ -80,16 +55,13 @@ services:
       - DATABASE_URL=postgresql://anomal_user:anomal_password@postgres:5432/anomal_db
       - AI_PROVIDER=ollama
       - OLLAMA_HOST=http://anomalia_ollama:11434
-      - OLLAMA_MODEL=llama3.2
-      - OIDC_ISSUER_URL=http://anomalia.local:8080/realms/aiops
+      - OLLAMA_MODEL=llama3.2:1b
     extra_hosts:
       - "anomalia.local:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
       ollama:
-        condition: service_started
-      keycloak:
         condition: service_started
     networks:
       - aiops-net

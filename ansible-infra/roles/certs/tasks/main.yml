@@ -1,0 +1,190 @@
+---
+# =====================================================================
+# Role: certs
+# Materializa la PKI del gateway en /opt/anomalia/certs
+#
+# Salida:
+#   ca.key + ca.crt    -> CA privada autofirmada (ancla de confianza)
+#   privkey.pem        -> clave privada del leaf
+#   leaf.crt           -> certificado del leaf (CN = certs_hostname)
+#   fullchain.pem      -> leaf + ca.crt, es lo que sirve uvicorn
+#
+# La CA separada permite que Parses valide el proxy TLS del gateway sin
+# depender de un leaf CA:FALSE usado como ancla (spec 008 §3.2).
+#
+# Idempotente: no regenera nada si el material ya existe, salvo que se pase
+# certs_force=true (necesario al cambiar el SAN o la clave).
+# =====================================================================
+
+- name: Construir lista de nombres DNS cubiertos por el SAN
+  ansible.builtin.set_fact:
+    certs_san_dns: "{{ ([certs_hostname] + certs_extra_dns) | unique }}"
+
+- name: Construir lista de IPs cubiertas por el SAN incluyendo la IP del nodo
+  ansible.builtin.set_fact:
+    certs_san_ips: "{{ (certs_ips + [ansible_default_ipv4.address | default('')]) | unique | reject('equalto', '') | list }}"
+
+- name: Construir el distinguished name de la CA privada
+  ansible.builtin.set_fact:
+    certs_ca_dn: >-
+      /C={{ certs_country }}/ST={{ certs_state }}/L={{ certs_locality }}/O={{ certs_org }}/OU={{ certs_ou }}/CN={{ certs_ca_cn }}
+
+- name: Eliminar el material criptografico previo cuando se fuerza la regeneracion
+  ansible.builtin.file:
+    path: "{{ certs_dir }}/{{ item }}"
+    state: absent
+  loop:
+    - ca.key
+    - ca.crt
+    - ca.srl
+    - privkey.pem
+    - leaf.csr
+    - leaf.crt
+    - fullchain.pem
+  when: certs_force | bool
+
+- name: Crear directorio de certificados TLS
+  ansible.builtin.file:
+    path: "{{ certs_dir }}"
+    state: directory
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
+    mode: '0755'
+
+- name: Renderizar configuracion OpenSSL con los SAN declarados
+  ansible.builtin.template:
+    src: openssl.cnf.j2
+    dest: "{{ certs_dir }}/openssl.cnf"
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
+    mode: '0644'
+
+- name: Generar la CA privada autofirmada si no existe
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - req
+      - -x509
+      - -nodes
+      - -newkey
+      - "rsa:{{ certs_key_size }}"
+      - -sha256
+      - -days
+      - "{{ certs_days }}"
+      - -keyout
+      - "{{ certs_dir }}/ca.key"
+      - -out
+      - "{{ certs_dir }}/ca.crt"
+      - -subj
+      - "{{ certs_ca_dn }}"
+      - -addext
+      - "basicConstraints=critical,CA:TRUE"
+      - -addext
+      - "keyUsage=critical,keyCertSign,cRLSign"
+  args:
+    creates: "{{ certs_dir }}/ca.crt"
+
+- name: Generar la clave privada del leaf si no existe
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - req
+      - -nodes
+      - -newkey
+      - "rsa:{{ certs_key_size }}"
+      - -sha256
+      - -keyout
+      - "{{ certs_dir }}/privkey.pem"
+      - -out
+      - "{{ certs_dir }}/leaf.csr"
+      - -config
+      - "{{ certs_dir }}/openssl.cnf"
+  args:
+    creates: "{{ certs_dir }}/privkey.pem"
+
+# El CSR se genera aparte: al migrar de un certificado autofirmado previo, la
+# clave ya existe pero el CSR no, y sin esta tarea la firma fallaria por falta de
+# leaf.csr.
+- name: Generar el CSR del leaf si no existe
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - req
+      - -new
+      - -key
+      - "{{ certs_dir }}/privkey.pem"
+      - -out
+      - "{{ certs_dir }}/leaf.csr"
+      - -config
+      - "{{ certs_dir }}/openssl.cnf"
+  args:
+    creates: "{{ certs_dir }}/leaf.csr"
+
+- name: Firmar el leaf con la CA privada si no existe
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -req
+      - -in
+      - "{{ certs_dir }}/leaf.csr"
+      - -CA
+      - "{{ certs_dir }}/ca.crt"
+      - -CAkey
+      - "{{ certs_dir }}/ca.key"
+      - -CAserial
+      - "{{ certs_dir }}/ca.srl"
+      - -CAcreateserial
+      - -days
+      - "{{ certs_days }}"
+      - -sha256
+      - -extfile
+      - "{{ certs_dir }}/openssl.cnf"
+      - -extensions
+      - v3_req
+      - -out
+      - "{{ certs_dir }}/leaf.crt"
+  args:
+    creates: "{{ certs_dir }}/leaf.crt"
+
+# El orden de la cadena importa: primero el leaf que presenta el servidor y
+# despues la CA que lo firma. Se ensambla por contenido para que sea idempotente
+# y se regenere solo si cambian leaf.crt o ca.crt.
+- name: Ensamblar la cadena fullchain (leaf + CA)
+  ansible.builtin.copy:
+    dest: "{{ certs_dir }}/fullchain.pem"
+    # El escalar de bloque garantiza el salto de linea entre ambos PEM: lookup()
+    # puede devolver el contenido sin el newline final y concatenarlos sin
+    # separador produce un PEM invalido.
+    content: |
+      {{ lookup('ansible.builtin.file', certs_dir ~ '/leaf.crt') }}
+      {{ lookup('ansible.builtin.file', certs_dir ~ '/ca.crt') }}
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
+    mode: '0644'
+
+- name: Ajustar permisos de la clave privada del leaf
+  ansible.builtin.file:
+    path: "{{ certs_dir }}/privkey.pem"
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
+    mode: '0600'
+
+- name: Ajustar permisos de la clave privada de la CA
+  ansible.builtin.file:
+    path: "{{ certs_dir }}/ca.key"
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
+    mode: '0600'
+
+- name: Ajustar permisos del certificado de la CA
+  ansible.builtin.file:
+    path: "{{ certs_dir }}/ca.crt"
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
+    mode: '0644'
+
+- name: Registrar disponibilidad del certificado para los roles posteriores
+  ansible.builtin.stat:
+    path: "{{ certs_dir }}/fullchain.pem"
+  register: certs_stat

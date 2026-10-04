@@ -1,0 +1,13 @@
+[Unit]
+Description=Aplica el aislamiento de red de los puertos de lectura de Victoria (Anomalia)
+After=network.target {{ anomalia_engine_service }}
+Wants=network.target
+Requires={{ anomalia_engine_service }}
+
+[Service]
+Type=oneshot
+ExecStart=/etc/anomalia/firewall/apply-victoria-firewall.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

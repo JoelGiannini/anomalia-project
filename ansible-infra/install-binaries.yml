@@ -12,7 +12,7 @@
     victoriametrics_version: "latest"
     victoriatraces_version: "latest"
     pyroscope_version: "latest"
-    parser_version: "latest"
+    parses_version: "latest"
     alertmanager_version: "latest"
 
   tasks:
@@ -22,6 +22,20 @@
         state: directory
         mode: '0755'
       run_once: yes
+
+    - name: Determinar arquitectura de binarios soportada
+      ansible.builtin.set_fact:
+        anomalia_bin_arch: >-
+          {{ 'amd64' if (ansible_architecture | lower == 'x86_64')
+             else 'arm64' if ('aarch64' in (ansible_architecture | lower))
+             else 'unsupported' }}
+
+    - name: Abortar si la arquitectura no está soportada
+      ansible.builtin.fail:
+        msg: >-
+          Arquitectura '{{ ansible_architecture }}' no soportada. Anomalia
+          publica binarios solo para x86_64 (amd64) y aarch64 (arm64).
+      when: anomalia_bin_arch == 'unsupported'
 
     # ==========================================
     # 1. VICTORIALOGS (vlstorage, vlinsert, vlselect)
@@ -39,9 +53,13 @@
         - name: Extraer URL de descarga para VictoriaLogs
           set_fact:
             vlogs_download_url: "{{ item.browser_download_url }}"
+          # La regex se define en vars: interpolar {{ }} dentro de un when:
+          # vuelve el condicional "unsafe" y Ansible aborta la tarea.
+          vars:
+            _pattern: "victoria-logs-linux-{{ anomalia_bin_arch }}-.*\\.tar\\.gz$"
           loop: "{{ vlogs_release.json.assets }}"
           when: 
-            - item.name is match("victoria-logs-linux-amd64-.*\\.tar\\.gz$")
+            - item.name is match(_pattern)
             - item.name is not search("enterprise")
 
         - name: Descargar tarball de VictoriaLogs
@@ -106,9 +124,13 @@
         - name: Extraer URL de descarga para VictoriaMetrics Cluster
           set_fact:
             vmcluster_download_url: "{{ item.browser_download_url }}"
+          # La regex se define en vars: interpolar {{ }} dentro de un when:
+          # vuelve el condicional "unsafe" y Ansible aborta la tarea.
+          vars:
+            _pattern: "victoria-metrics-linux-{{ anomalia_bin_arch }}-.*-cluster\\.tar\\.gz$"
           loop: "{{ vm_release.json.assets }}"
           when: 
-            - item.name is match("victoria-metrics-linux-amd64-.*-cluster\\.tar\\.gz$")
+            - item.name is match(_pattern)
             - item.name is not search("enterprise")
 
         - name: Descargar tarball de VictoriaMetrics Cluster
@@ -173,9 +195,13 @@
         - name: Extraer URL de descarga para VictoriaTraces
           set_fact:
             vtcluster_download_url: "{{ item.browser_download_url }}"
+          # La regex se define en vars: interpolar {{ }} dentro de un when:
+          # vuelve el condicional "unsafe" y Ansible aborta la tarea.
+          vars:
+            _pattern: "victoria-traces-linux-{{ anomalia_bin_arch }}-.*\\.tar\\.gz$"
           loop: "{{ vt_release.json.assets }}"
           when: 
-            - item.name is match("victoria-traces-linux-amd64-.*\\.tar\\.gz$")
+            - item.name is match(_pattern)
             - item.name is not search("enterprise")
 
         - name: Descargar tarball de VictoriaTraces
@@ -240,9 +266,13 @@
         - name: Extraer URL de descarga para vmutils
           set_fact:
             vmutils_download_url: "{{ item.browser_download_url }}"
+          # La regex se define en vars: interpolar {{ }} dentro de un when:
+          # vuelve el condicional "unsafe" y Ansible aborta la tarea.
+          vars:
+            _pattern: "vmutils-linux-{{ anomalia_bin_arch }}-.*\\.tar\\.gz$"
           loop: "{{ vmutils_release.json.assets }}"
           when: 
-            - item.name is match("vmutils-linux-amd64-.*\\.tar\\.gz$")
+            - item.name is match(_pattern)
             - item.name is not search("enterprise")
 
         - name: Descargar tarball de vmutils
@@ -304,11 +334,15 @@
             body_format: json
           register: pyroscope_release
 
-        - name: Extraer URL de descarga para Pyroscope Linux amd64
+        - name: Extraer URL de descarga para Pyroscope
           set_fact:
             pyroscope_download_url: "{{ item.browser_download_url }}"
+          # La regex se define en vars: interpolar {{ }} dentro de un when:
+          # vuelve el condicional "unsafe" y Ansible aborta la tarea.
+          vars:
+            _pattern: "pyroscope_.*_linux_{{ anomalia_bin_arch }}\\.tar\\.gz$"
           loop: "{{ pyroscope_release.json.assets }}"
-          when: item.name is match("pyroscope_.*_linux_amd64\\.tar\\.gz$")
+          when: item.name is match(_pattern)
 
         - name: Descargar tarball de Pyroscope
           get_url:
@@ -352,12 +386,16 @@
             body_format: json
           register: alertmanager_release
 
-        - name: Extraer URL de descarga para Alertmanager Linux amd64
+        - name: Extraer URL de descarga para Alertmanager
           set_fact:
             alertmanager_download_url: "{{ item.browser_download_url }}"
             alertmanager_folder_name: "{{ item.name | regex_replace('\\.tar\\.gz$', '') }}"
+          # La regex se define en vars: interpolar {{ }} dentro de un when:
+          # vuelve el condicional "unsafe" y Ansible aborta la tarea.
+          vars:
+            _pattern: "alertmanager-.*\\.linux-{{ anomalia_bin_arch }}\\.tar\\.gz$"
           loop: "{{ alertmanager_release.json.assets }}"
-          when: item.name is match("alertmanager-.*\\.linux-amd64\\.tar\\.gz$")
+          when: item.name is match(_pattern)
 
         - name: Descargar tarball de Alertmanager
           get_url:

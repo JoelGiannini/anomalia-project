@@ -467,6 +467,116 @@ export const admin = {
         }
     },
 
+    async loadAIConfig() {
+        const select = document.getElementById('ai-provider-select');
+        if (!select) return;
+        try {
+            const [cfg, catalog] = await Promise.all([api.getAIConfig(), api.getAIProviders()]);
+            this._aiCfg = cfg;
+            const providers = catalog.providers || [];
+            const groupLabels = { free: 'Free (OpenCode Zen)', local: 'Local', apikey: 'API Key' };
+            const byGroup = {};
+            const groups = [];
+            providers.forEach(p => {
+                if (!byGroup[p.group]) { byGroup[p.group] = []; groups.push(p.group); }
+                byGroup[p.group].push(p);
+            });
+            select.innerHTML = groups.map(g =>
+                `<optgroup label="${groupLabels[g] || g}">` +
+                byGroup[g].map(p => `<option value="${p.id}">${p.label}</option>`).join('') +
+                `</optgroup>`
+            ).join('');
+            select.value = cfg.provider || 'anomalia_ollama';
+            select.onchange = () => this._refreshAIPanel();
+            this._refreshAIPanel();
+        } catch (err) {
+            console.error(err);
+        }
+    },
+
+    _refreshAIPanel() {
+        const select = document.getElementById('ai-provider-select');
+        const cfg = this._aiCfg || {};
+        const providerId = select?.value || cfg.provider || 'anomalia_ollama';
+        const group = providerId === 'anomalia_ollama' ? 'local' : providerId === 'gemini' ? 'apikey' : 'free';
+        const zenField = document.getElementById('ai-zen-api-key');
+        const geminiKeyField = document.getElementById('ai-gemini-key-field');
+        const geminiModelField = document.getElementById('ai-gemini-model-field');
+        if (zenField) {
+            document.getElementById('ai-zen-key-field').classList.toggle('hidden', group !== 'free');
+            zenField.placeholder = cfg.has_zen_key
+                ? 'Guardada — deja vacío para conservarla'
+                : 'Se guarda en la base de datos';
+        }
+        if (geminiKeyField) geminiKeyField.classList.toggle('hidden', group !== 'apikey');
+        if (geminiModelField) geminiModelField.classList.toggle('hidden', group !== 'apikey');
+        const status = document.getElementById('ai-provider-status');
+        if (status) {
+            if (group === 'free') {
+                status.innerHTML = cfg.has_zen_key
+                    ? '<span class="text-emerald-400">● API Key Zen configurada</span>'
+                    : '<span class="text-amber-400">● Sin API Key Zen: ingrésala para usar los modelos Free</span>';
+            } else if (group === 'apikey') {
+                status.innerHTML = cfg.has_gemini_key
+                    ? '<span class="text-emerald-400">● API Key Gemini configurada</span>'
+                    : '<span class="text-amber-400">● Sin API Key Gemini: ingrésala para usar este proveedor</span>';
+            } else {
+                status.innerHTML = '<span class="text-emerald-400">● Proveedor local disponible</span>';
+            }
+        }
+        if (group === 'apikey') this.loadGeminiModels();
+    },
+
+    async loadGeminiModels() {
+        const modelSelect = document.getElementById('ai-gemini-model');
+        if (!modelSelect) return;
+        try {
+            const data = await api.getGeminiModels();
+            const models = data.models || [];
+            modelSelect.innerHTML = models.map(m => `<option value="${m}">${m}</option>`).join('');
+            if (data.current) modelSelect.value = data.current;
+        } catch (err) {
+            console.error(err);
+        }
+    },
+
+    async saveAIConfig() {
+        const select = document.getElementById('ai-provider-select');
+        if (!select) return;
+        const payload = { provider: select.value };
+        const zenKey = document.getElementById('ai-zen-api-key')?.value;
+        const geminiKey = document.getElementById('ai-gemini-api-key')?.value;
+        const geminiModel = document.getElementById('ai-gemini-model')?.value;
+        if (zenKey) payload.zen_api_key = zenKey;
+        if (geminiKey) payload.gemini_api_key = geminiKey;
+        if (geminiModel) payload.gemini_model = geminiModel;
+        try {
+            await api.saveAIConfig(payload);
+            alert('Configuración de IA guardada correctamente.');
+            await this.loadAIConfig();
+        } catch (e) {
+            alert('Error: ' + (e.message || 'No se pudo guardar la configuración.'));
+        }
+    },
+
+    async testAIProvider() {
+        const select = document.getElementById('ai-provider-select');
+        const resultBox = document.getElementById('ai-test-result');
+        if (!select || !resultBox) return;
+        resultBox.classList.remove('hidden');
+        resultBox.innerHTML = '<span class="opacity-75">Probando conexión...</span>';
+        try {
+            const data = await api.testAIProvider(select.value);
+            if (data.ok) {
+                resultBox.innerHTML = `<span class="text-emerald-400">● Conexión OK (${data.provider}):</span> ${data.response || '(respuesta vacía)'}`;
+            } else {
+                resultBox.innerHTML = `<span class="text-red-400">● Error (${data.provider}):</span> ${data.error || 'Error desconocido'}`;
+            }
+        } catch (e) {
+            resultBox.innerHTML = `<span class="text-red-400">● Error de red:</span> ${e.message || e}`;
+        }
+    },
+
     async loadInfraNodes() {
         const token = api.getToken();
         const container = document.getElementById("infra-nodes-container");
@@ -483,6 +593,10 @@ export const admin = {
                     const ipAddress = n.ip_address || '--';
                     const serviceIp = n.service_ip || '--';
                     const nodeType = n.component_type || n.type || '--';
+                    const canUpdate = n.updatable !== false;
+                    const updateBtn = canUpdate
+                        ? `<button data-update-infra='${n.id}' class="btn-update-infra text-xs dynamic-accent px-2 py-1 rounded">Update</button>`
+                        : `<button disabled title="install-binaries.yml no actualiza '${nodeType}'" class="text-xs px-2 py-1 rounded opacity-40 cursor-not-allowed border">Update</button>`;
                     return `
                     <div class="dynamic-card border rounded-xl p-4 flex justify-between items-center" id="infra-node-card-${n.id}">
                         <div>
@@ -491,7 +605,7 @@ export const admin = {
                         </div>
                         <div class="flex items-center space-x-2" id="infra-actions-${n.id}">
                             <button data-edit-infra='${safeNodeJson}' class="btn-edit-infra text-xs dynamic-card border px-2 py-1 rounded">Editar</button>
-                            <button data-update-infra='${n.id}' class="btn-update-infra text-xs dynamic-accent px-2 py-1 rounded">Update</button>
+                            ${updateBtn}
                             <button data-delete-infra="${n.id}" class="btn-delete-infra text-xs bg-red-500/20 text-red-400 border border-red-500/30 px-2 py-1 rounded">Eliminar</button>
                         </div>
                     </div>
@@ -608,12 +722,25 @@ export const admin = {
             if (bar) bar.style.width = '100%';
             if (txt) txt.innerText = '100%';
 
-            setTimeout(() => {
-                if (res.ok) {
+            if (res.ok) {
+                setTimeout(() => {
                     alert("Playbook ejecutado y nodo actualizado correctamente.");
-                } else {
-                    alert("Actualización finalizada con observaciones.");
-                }
+                    this.loadInfraNodes();
+                }, 500);
+                return;
+            }
+
+            // El detalle del fallo (STDOUT/STDERR de ansible-playbook) viene en el
+            // body: mostrarlo es la única forma de saber por qué falló.
+            let detail = `HTTP ${res.status}`;
+            try {
+                const body = await res.json();
+                if (body && body.detail) detail = body.detail;
+            } catch (_) { /* respuesta sin JSON */ }
+
+            console.error(`Update de infraestructura ${id} falló:`, detail);
+            setTimeout(() => {
+                alert(`La actualización del nodo falló (HTTP ${res.status}).\n\n${detail}`);
                 this.loadInfraNodes();
             }, 500);
 

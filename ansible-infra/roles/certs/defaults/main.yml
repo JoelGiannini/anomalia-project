@@ -1,0 +1,42 @@
+# =====================================================================
+# Configuración de certificados TLS del gateway
+# =====================================================================
+
+# Ruta donde se materializan los certificados consumidos por el gateway
+certs_dir: "/opt/anomalia/certs"
+
+# Nombre principal (CN) del certificado
+certs_hostname: "anomalia.local"
+
+# Nombres alternativos adicionales cubiertos por el SAN.
+# anomalia_gw_tls es obligatorio: el proxy de datasources de Parses apunta al
+# gateway por TLS con ese nombre de servicio (spec 008 §3.2).
+certs_extra_dns:
+  - "localhost"
+  - "anomalia_gw_tls"
+
+# Direcciones IP cubiertas por el SAN (acceso directo por IP)
+certs_ips:
+  - "127.0.0.1"
+
+# Vigencia del certificado autofirmado (días)
+certs_days: 3650
+
+# Algoritmo y tamaño de clave
+certs_key_size: 4096
+
+# Regenera el material criptográfico aunque ya exista. Necesario cuando cambia
+# el SAN o la clave; destroy-infra.yml conserva el directorio de certificados,
+# por lo que sin esto un cambio de SAN no se aplicaría.
+certs_force: false
+
+# Distinguished name del leaf y de la CA privada
+certs_country: "AR"
+certs_state: "Buenos Aires"
+certs_locality: "Buenos Aires"
+certs_org: "Anomalia"
+certs_ou: "Platform"
+
+# CN de la CA privada que firma el leaf. Esa CA es el ancla de confianza que
+# consume el Secret de Parses (spec 008), por eso se materializa aparte.
+certs_ca_cn: "Anomalia Root CA"

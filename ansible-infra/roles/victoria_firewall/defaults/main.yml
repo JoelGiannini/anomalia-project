@@ -1,0 +1,33 @@
+---
+# Puertos de LECTURA de los backends Victoria (servicios systemd en el host).
+# Son los que sirven /query, /select y /render. El backend de Anomalia y Parses
+# los consumen desde contenedores en el puente de contenedores anomalia_aiops-net.
+victoria_firewall_ports:
+  - 8401   # vmselect  (VictoriaMetrics - api prometheus /select/<a>:<p>/prometheus)
+  - 8481   # vlselect  (VictoriaLogs - /select/logsql)
+  - 8491   # vtselect  (VictoriaTraces - /select/jaeger/api)
+  - 4040   # pyroscope (/pyroscope/render)
+
+# Subred del puente de contenedores por defecto (Docker). 172.16.0.0/12 cubre el
+# pool completo por defecto de Docker (172.17.x default bridge + 172.18-172.31
+# user-defined). Para despliegues públicos, declara la subred EXACTA del bridge
+# (docker network inspect anomalia_aiops-net) y/o los CIDRs de tu red
+# (VPN/corporativa) en victoria_firewall_allowed_sources en lugar de la red /12.
+victoria_firewall_docker_cidr: "172.16.0.0/12"
+
+# IP del host: los servicios systemd locales (vmagent, vmalert) consultan a los
+# select nodes por esta IP, así que el propio host puede conectarse.
+victoria_firewall_host_ip: "{{ ansible_host | default('127.0.0.1') }}"
+
+# Orígenes permitidos hacia los puertos de lectura: la red de contenedores, el
+# loopback y el propio host. Extender/afinar para disponibilizar públicamente.
+victoria_firewall_allowed_sources:
+  - "{{ victoria_firewall_docker_cidr }}"
+  - "127.0.0.0/8"
+  - "{{ victoria_firewall_host_ip }}"
+
+# Interruptor general del aislamiento L4 de los puertos de lectura. Poner a
+# `false` en entornos donde el security group / network ACL del cloud ya aísla
+# esos puertos, o si se decide exponerlos (NO recomendado; siempre frontar por
+# el gateway TLS).
+victoria_firewall_enabled: true

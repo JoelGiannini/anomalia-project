@@ -1,0 +1,56 @@
+---
+- name: Crear directorio de despliegue para parses en el nodo asignado a anomalia
+  ansible.builtin.file:
+    path: "/opt/anomalia/parses"
+    state: directory
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
+    mode: '0755'
+
+- name: Copiar plantilla de Docker Compose para parses con permisos de anomalia
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "/opt/anomalia/parses/docker-compose.yml"
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
+    mode: '0644'
+
+- name: Copiar configuracion de Perses (config.yaml) con permisos de anomalia
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "/opt/anomalia/parses/config.yaml"
+    owner: "{{ nombre_usuario }}"
+    group: "{{ nombre_usuario }}"
+    mode: '0644'
+
+- name: Asegurar que se descargue la última versión de la imagen
+  ansible.builtin.shell: "{{ anomalia_engine_cmd }} pull {{ parses_image }}"
+  become: yes
+  become_user: "{{ nombre_usuario }}"
+  environment:
+    PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/usr/bin"
+  register: pull_result
+  changed_when: "'Downloaded newer image' in pull_result.stdout or 'Image is up to date' not in pull_result.stdout"
+
+- name: Limpiar contenedores previos de parses con compose down
+  ansible.builtin.shell: "{{ anomalia_compose_cmd }} down --remove-orphans || true"
+  args:
+    chdir: "/opt/anomalia/parses"
+  become: yes
+  become_user: "{{ nombre_usuario }}"
+  environment:
+    PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/usr/bin"
+  changed_when: false
+
+- name: Levantar stack de contenedores de parses con Compose como usuario anomalia
+  ansible.builtin.shell: "{{ anomalia_compose_cmd }} up -d"
+  args:
+    chdir: "/opt/anomalia/parses"
+  become: yes
+  become_user: "{{ nombre_usuario }}"
+  environment:
+    PATH: "{{ ansible_env.PATH }}:/usr/local/bin:/usr/bin"
+  register: result
+  until: result.rc == 0
+  retries: 3
+  delay: 10

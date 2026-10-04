@@ -80,11 +80,25 @@ def init_db(hash_password_func):
                 id SERIAL PRIMARY KEY,
                 name VARCHAR(100) UNIQUE NOT NULL,
                 type VARCHAR(50) DEFAULT 'metrics',
-                account_id INTEGER NOT NULL,
-                project_id INTEGER NOT NULL,
+                account_id INTEGER,
+                project_id INTEGER,
                 environment VARCHAR(50),
                 port INTEGER DEFAULT 8427,
                 description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tenant_datasources (
+                tenant_id INTEGER PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+                kind VARCHAR(50) NOT NULL,
+                read_url TEXT NOT NULL,
+                scoping VARCHAR(20) NOT NULL DEFAULT 'header',
+                account_id INTEGER,
+                project_id INTEGER,
+                org_id VARCHAR(255),
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
@@ -133,6 +147,21 @@ def init_db(hash_password_func):
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ai_settings (
+                id SERIAL PRIMARY KEY,
+                selected_provider VARCHAR(100) DEFAULT 'anomalia_ollama',
+                zen_api_key TEXT DEFAULT '',
+                gemini_api_key TEXT DEFAULT '',
+                gemini_model VARCHAR(100) DEFAULT 'gemini-3.5-flash-lite',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        cursor.execute("SELECT COUNT(*) FROM ai_settings;")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("INSERT INTO ai_settings (selected_provider) VALUES ('anomalia_ollama');")
         
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS infrastructure_nodes (

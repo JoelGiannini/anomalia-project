@@ -5,3 +5,20 @@ El flujo de procesamiento automatizado de anomalías opera de la siguiente maner
 2. **Alertmanager** notifica vía webhook al backend FastAPI.
 3. El **Backend** procesa la alerta y consulta al modelo de IA para diagnóstico.
 4. Se distribuye la alerta enriquecida al panel Web y a la App Android.
+
+## Proveedor de IA
+
+El proveedor de IA se selecciona en el panel de control (pestaña «Proveedor IA») y
+se guarda en la tabla `ai_settings` de PostgreSQL. Catálogo disponible:
+
+- **Free (OpenCode Zen):** Space Bunny Free. Requiere API Key Zen ingresada en el
+  panel (https://opencode.ai/auth). Es el único modelo Free que el gateway Zen
+  permite invocar con API key desde fuera de la app; los demás modelos Free
+  devuelven `403 FreeTierError` (verificado 2026-10-02, spec 003 §2.5).
+- **Local:** `anomalia_ollama` (contenedor Ollama del stack, sin límite de tokens).
+  Modelo por defecto `llama3.2:1b`, descargado automáticamente por el role
+  `backend` durante el despliegue.
+- **API Key:** Gemini (Google), con API Key y modelo configurables desde el panel.
+
+Las API keys viven únicamente en la base de datos; nunca en archivos del repositorio.
+Ver `specs/003-aiops-alert-pipeline.md` §2 para el detalle completo.

@@ -137,12 +137,12 @@ scrape_configs:
           - '{{ hostvars[host].backend_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:8000'
 {% endfor %}
 {% endif %}
-{% if groups.get('parser_nodes', []) | length > 0 %}
-  - job_name: 'parser-service'
+{% if groups.get('parses_nodes', []) | length > 0 %}
+  - job_name: 'parses-service'
     scheme: http
     static_configs:
       - targets:
-{% for host in groups['parser_nodes'] %}
-          - '{{ hostvars[host].parser_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:8090'
+{% for host in groups['parses_nodes'] %}
+          - '{{ hostvars[host].parses_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].parses_port | default(8090) }}'
 {% endfor %}
 {% endif %}

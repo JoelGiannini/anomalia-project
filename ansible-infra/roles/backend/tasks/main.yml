@@ -5,7 +5,7 @@
   register: compose_file
 
 - name: Bajar el stack de contenedores previo y eliminar volúmenes si es necesario
-  ansible.builtin.command: docker-compose down -v --remove-orphans
+  ansible.builtin.command: "{{ anomalia_compose_cmd }} down -v --remove-orphans"
   args:
     chdir: "/opt/anomalia/backend"
   become: yes
@@ -57,19 +57,6 @@
     group: "{{ nombre_usuario }}"
     remote_src: no
 
-- name: Crear directorio de certificados SSL si no existe
-  ansible.builtin.file:
-    path: "/opt/anomalia/certs"
-    state: directory
-    owner: "{{ nombre_usuario }}"
-    group: "{{ nombre_usuario }}"
-    mode: '0755'
-
-- name: Verificar si existen certificados SSL
-  ansible.builtin.stat:
-    path: "/opt/anomalia/certs/fullchain.pem"
-  register: cert_file
-
 - name: Copiar plantilla de Docker Compose con integración de Pyroscope
   ansible.builtin.template:
     src: docker-compose.yml.j2
@@ -104,8 +91,8 @@
   loop:
     - "install-binaries.yml"
 
-- name: Reconstruir y levantar stack de contenedores con Docker Compose como usuario anomalia
-  ansible.builtin.shell: docker-compose up -d --build
+- name: Reconstruir y levantar stack de contenedores con Compose como usuario anomalia
+  ansible.builtin.shell: "{{ anomalia_compose_cmd }} up -d --build"
   args:
     chdir: "/opt/anomalia/backend"
   become: yes
@@ -116,3 +103,59 @@
   until: result.rc == 0
   retries: 3
   delay: 10
+
+# --- Aprovisionamiento del modelo de Ollama (spec 003) ----------------
+# El contenedor arranca sin modelos; sin "ollama pull" el backend
+# recibe 404 al invocar la API. Engine-agnóstico: se usa la API HTTP
+# de Ollama publicada en el host (127.0.0.1:11434), no docker/podman.
+# Se usa curl (siempre disponible) en lugar del módulo uri para evitar
+# problemas con become_user y el entorno Python del usuario anomalia.
+- name: Esperar a que el servicio Ollama responda en el host
+  ansible.builtin.shell: |
+    for i in $(seq 1 24); do
+      if curl -sf -m 5 http://127.0.0.1:11434/api/tags > /dev/null 2>&1; then
+        echo "ready"
+        exit 0
+      fi
+      sleep 5
+    done
+    echo "ollama no respondió tras 120s"
+    exit 1
+  register: ollama_wait
+  changed_when: false
+  until: ollama_wait.rc == 0
+  retries: 3
+  delay: 5
+
+- name: Verificar si el modelo de Ollama ya está presente
+  ansible.builtin.shell: |
+    curl -sf -m 10 http://127.0.0.1:11434/api/tags | python3 -c "import sys,json; print('yes' if '{{ ollama_model }}' in [m.get('name','') for m in json.load(sys.stdin).get('models',[])] else 'no')" 2>/dev/null || echo no
+  register: ollama_model_check
+  changed_when: false
+
+- name: Descargar el modelo de Ollama por defecto si no está presente
+  ansible.builtin.shell: |
+    curl -sf -m 1800 -X POST http://127.0.0.1:11434/api/pull \
+      -H 'Content-Type: application/json' \
+      -d '{"model":"{{ ollama_model }}","stream":false}'
+  when: ollama_model_check.stdout.strip() == 'no'
+  register: ollama_pull
+  changed_when: "'success' in ollama_pull.stdout"
+
+- name: Verificar que el modelo de Ollama quedó disponible
+  ansible.builtin.shell: |
+    for i in $(seq 1 20); do
+      found=$(curl -sf -m 10 http://127.0.0.1:11434/api/tags | python3 -c "import sys,json; print('yes' if '{{ ollama_model }}' in [m.get('name','') for m in json.load(sys.stdin).get('models',[])] else 'no')" 2>/dev/null || echo no)
+      if [ "$found" = "yes" ]; then
+        echo "modelo {{ ollama_model }} disponible"
+        exit 0
+      fi
+      sleep 5
+    done
+    echo "el modelo {{ ollama_model }} no quedó disponible"
+    exit 1
+  register: ollama_verify
+  changed_when: false
+  until: ollama_verify.rc == 0
+  retries: 3
+  delay: 5

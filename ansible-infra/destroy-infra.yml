@@ -2,7 +2,101 @@
 - name: Limpiar y desinstalar la infraestructura de Anomalia
   hosts: all_nodes
   become: yes
+  vars_files:
+    # Puertos y orígenes del aislamiento L4: fuente única con el role
+    # victoria_firewall para retirar exactamente las reglas que se crearon.
+    - roles/victoria_firewall/defaults/main.yml
+  pre_tasks:
+    - name: Detectar motor de contenedores y Compose (facts compartidos con el deploy)
+      ansible.builtin.include_tasks: tasks/detect_container_stack.yml
+      tags: always
+
+    - name: Detectar si firewalld está activo (para retirar sus rich rules)
+      ansible.builtin.shell: |
+        if systemctl is-active firewalld >/dev/null 2>&1 && command -v firewall-cmd >/dev/null 2>&1; then
+          echo firewalld
+        else
+          echo none
+        fi
+      register: fw_detect_destroy
+      changed_when: false
+      check_mode: no
+      tags: always
+
+    - name: Definir backend de firewall para el teardown
+      ansible.builtin.set_fact:
+        destroy_firewall_backend: "{{ (fw_detect_destroy.stdout | trim) if (fw_detect_destroy is defined) else 'none' }}"
+      tags: always
+
+    - name: Avisar si no hay motor de contenedores (se limpia igual el host)
+      ansible.builtin.debug:
+        msg: >-
+          No se detectó Docker ni Podman: se omite la limpieza de contenedores,
+          redes e imágenes. La limpieza del host (servicios, firewall, datos,
+          binarios y usuario) se ejecuta igual.
+      when: anomalia_container_engine == 'missing'
+
   tasks:
+    # =====================================================================
+    # Firewall: retirar el aislamiento L4 de los puertos de lectura
+    # (se hace antes de borrar /etc/anomalia, que contiene el script)
+    # =====================================================================
+    - name: Retirar el salto y la cadena iptables de los puertos de lectura
+      ansible.builtin.shell: |
+        set +e
+        IPTABLES="$(command -v iptables || echo /usr/sbin/iptables)"
+        [ -x "$IPTABLES" ] || exit 0
+        while "$IPTABLES" -C INPUT -j ANOMALIA_VICTORIA_READ 2>/dev/null; do
+          "$IPTABLES" -D INPUT -j ANOMALIA_VICTORIA_READ
+        done
+        "$IPTABLES" -F ANOMALIA_VICTORIA_READ 2>/dev/null
+        "$IPTABLES" -X ANOMALIA_VICTORIA_READ 2>/dev/null
+        exit 0
+      changed_when: false
+
+    - name: Retirar las rich rules de los orígenes permitidos (firewalld)
+      ansible.builtin.shell: |
+        set +e
+        RULE="rule family=ipv4 source address={{ item.1 }} port port={{ item.0 }} protocol=tcp accept"
+        firewall-cmd --permanent --remove-rich-rule="$RULE" >/dev/null 2>&1
+        firewall-cmd --remove-rich-rule="$RULE" >/dev/null 2>&1
+        exit 0
+      loop: "{{ victoria_firewall_ports | product(victoria_firewall_allowed_sources) | list }}"
+      changed_when: false
+      when: destroy_firewall_backend == 'firewalld'
+
+    - name: Retirar las rich rules de cierre por puerto (firewalld)
+      ansible.builtin.shell: |
+        set +e
+        RULE="rule family=ipv4 port port={{ item }} protocol=tcp drop"
+        firewall-cmd --permanent --remove-rich-rule="$RULE" >/dev/null 2>&1
+        firewall-cmd --remove-rich-rule="$RULE" >/dev/null 2>&1
+        exit 0
+      loop: "{{ victoria_firewall_ports }}"
+      changed_when: false
+      when: destroy_firewall_backend == 'firewalld'
+
+    - name: Recargar firewalld tras retirar las rich rules
+      ansible.builtin.command: firewall-cmd --reload
+      changed_when: false
+      failed_when: false
+      when: destroy_firewall_backend == 'firewalld'
+
+    - name: Detener y deshabilitar la unit del firewall de Victoria
+      ansible.builtin.systemd:
+        name: anomalia-victoria-firewall
+        state: stopped
+        enabled: no
+      failed_when: false
+
+    - name: Eliminar la unit del firewall de Victoria
+      ansible.builtin.file:
+        path: "/etc/systemd/system/anomalia-victoria-firewall.service"
+        state: absent
+
+    # =====================================================================
+    # Servicios systemd de los backends Victoria
+    # =====================================================================
     - name: Detener y deshabilitar servicios de systemd de Anomalia
       systemd:
         name: "{{ item }}"
@@ -49,23 +143,91 @@
       systemd:
         daemon_reload: yes
 
-    - name: Detener y eliminar contenedores Docker de Backend con Docker Compose
-      command: docker compose down -v
+    # =====================================================================
+    # Contenedores (motor y Compose detectados, sin asumir Docker v2)
+    # =====================================================================
+    - name: Comprobar el directorio de despliegue del stack de Backend
+      ansible.builtin.stat:
+        path: /opt/anomalia/backend
+      register: backend_dir
+
+    - name: Comprobar el directorio de despliegue del stack de Parses
+      ansible.builtin.stat:
+        path: /opt/anomalia/parses
+      register: parses_dir
+
+    - name: Detener y eliminar el stack de Backend con Compose
+      ansible.builtin.command: "{{ anomalia_compose_cmd }} down -v --remove-orphans --timeout 10"
       args:
         chdir: "/opt/anomalia/backend"
-      ignore_errors: yes
+      changed_when: "'Removing' in (stdout | default(''))"
+      failed_when: false
+      when:
+        - anomalia_compose_cmd != 'missing'
+        - backend_dir.stat.exists
 
-    - name: Detener y eliminar contenedores Docker de Parser con Docker Compose
-      command: docker compose down -v
+    - name: Detener y eliminar el stack de Parses con Compose
+      ansible.builtin.command: "{{ anomalia_compose_cmd }} down -v --remove-orphans --timeout 10"
       args:
-        chdir: "/opt/anomalia/parser"
-      ignore_errors: yes
+        chdir: "/opt/anomalia/parses"
+      changed_when: "'Removing' in (stdout | default(''))"
+      failed_when: false
+      when:
+        - anomalia_compose_cmd != 'missing'
+        - parses_dir.stat.exists
 
-    - name: Forzar la destrucción y limpieza de contenedores Docker remanentes
-      shell: |
-        docker rm -f anomalia_parser anomalia_gw anomalia_keycloak anomalia_postgres anomalia_ollama 2>/dev/null || true
-      ignore_errors: yes
+    - name: Eliminar contenedores remanentes de Anomalia
+      ansible.builtin.shell: |
+        set +e
+        ids="$("{{ anomalia_engine_cmd }}" ps -aq --filter name=anomalia_ 2>/dev/null)"
+        [ -n "$ids" ] || exit 0
+        echo "$ids" | xargs -r "{{ anomalia_engine_cmd }}" rm -f
+        exit 0
+      changed_when: false
+      when: anomalia_container_engine in ['docker', 'podman']
 
+    - name: Eliminar la red compartida anomalia_aiops-net
+      ansible.builtin.command: "{{ anomalia_engine_cmd }} network rm anomalia_aiops-net"
+      changed_when: false
+      failed_when: false
+      when: anomalia_container_engine in ['docker', 'podman']
+
+    # =====================================================================
+    # Imágenes y volúmenes: solo los de los proyectos compose de Anomalia
+    # (label com.docker.compose.project). Las imágenes base compartidas
+    # (postgres, ollama) se conservan cacheadas a propósito.
+    # =====================================================================
+    - name: Listar imágenes y volúmenes de los stacks de Anomalia
+      ansible.builtin.shell: |
+        set +e
+        for project in backend parses; do
+          "{{ anomalia_engine_cmd }}" image ls -q --filter "label=com.docker.compose.project=$project" 2>/dev/null
+          "{{ anomalia_engine_cmd }}" volume ls -q --filter "label=com.docker.compose.project=$project" 2>/dev/null
+        done | sort -u
+      register: anomalia_stack_resources
+      changed_when: false
+      when: anomalia_container_engine in ['docker', 'podman']
+
+    - name: Eliminar imágenes y volúmenes construidos por los stacks de Anomalia
+      ansible.builtin.shell: |
+        set +e
+        echo "{{ anomalia_stack_resources.stdout | default('') }}" | grep -E '^[0-9a-f]{12,}$' | while read -r id; do
+          "{{ anomalia_engine_cmd }}" rmi -f "$id" >/dev/null 2>&1
+          "{{ anomalia_engine_cmd }}" volume rm -f "$id" >/dev/null 2>&1
+        done
+        exit 0
+      changed_when: false
+      when: anomalia_container_engine in ['docker', 'podman']
+
+    - name: Limpiar volúmenes anónimos huérfanos
+      ansible.builtin.command: "{{ anomalia_engine_cmd }} volume prune -f"
+      changed_when: false
+      failed_when: false
+      when: anomalia_container_engine in ['docker', 'podman']
+
+    # =====================================================================
+    # Datos, configuración y binarios
+    # =====================================================================
     - name: Eliminar directorios de datos, despliegues y configuración de Anomalia
       file:
         path: "{{ item }}"
@@ -73,7 +235,16 @@
       loop:
         - /var/lib/anomalia
         - /etc/anomalia
-        - /opt/anomalia
+        - /opt/anomalia/backend
+        - /opt/anomalia/parses
+        - /tmp/anomalia-binaries
+
+    - name: Preservar el material TLS al destruir la infraestructura
+      ansible.builtin.debug:
+        msg: >-
+          /opt/anomalia/certs se conserva intencionalmente. Para regenerar
+          certificados autofirmados, borrar fullchain.pem y privkey.pem de forma
+          explícita. Ver specs/007-https-gateway-and-tenant-access.md
 
     - name: Eliminar binarios instalados en /usr/local/bin
       ansible.builtin.file:
@@ -94,7 +265,7 @@
         - vmalert
         - alertmanager
         - pyroscope
-        - anomalia_parser
+        - anomalia_parses
       ignore_errors: yes
 
     - name: Eliminar usuario anomalia del sistema
@@ -104,14 +275,12 @@
         remove: yes
       ignore_errors: yes
 
-    - name: Limpiar volúmenes Docker huérfanos
-      ansible.builtin.command: docker volume prune -f
-      ignore_errors: yes
-
-    - name: Limpiar redes Docker no usadas
-      ansible.builtin.command: docker network prune -f
-      ignore_errors: yes
-
-    - name: Limpiar imágenes Docker sin usar
-      ansible.builtin.command: docker image prune -a -f
-      ignore_errors: yes
+    - name: Resumen del teardown
+      ansible.builtin.debug:
+        msg: >-
+          Teardown completado (motor={{ anomalia_container_engine }},
+          compose={{ anomalia_compose_cmd }},
+          firewall={{ destroy_firewall_backend }}).
+          Contenedores, red, imágenes y volúmenes de los stacks de Anomalia,
+          servicios systemd, datos, configuración, firewall y binarios fueron
+          retirados. /opt/anomalia/certs se conserva.

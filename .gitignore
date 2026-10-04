@@ -37,3 +37,6 @@ Thumbs.db
 *.sar
 *.prof
 coverage/
+
+# Cache de migracion Grafana -> Perses (se regenera en el primer login)
+backend/dashboards/migrated/

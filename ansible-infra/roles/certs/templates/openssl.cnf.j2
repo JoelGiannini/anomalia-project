@@ -1,0 +1,33 @@
+# =====================================================================
+# Configuración OpenSSL para el certificado autofirmado del gateway
+# Generada por Ansible. No editar manualmente: se regenera en cada deploy.
+# =====================================================================
+
+[ req ]
+default_bits       = {{ certs_key_size }}
+prompt             = no
+default_md         = sha256
+distinguished_name = req_distinguished_name
+x509_extensions    = v3_req
+
+[ req_distinguished_name ]
+C  = {{ certs_country | default('AR') }}
+ST = {{ certs_state | default('Buenos Aires') }}
+L  = {{ certs_locality | default('Buenos Aires') }}
+O  = {{ certs_org | default('Anomalia') }}
+OU = {{ certs_ou | default('Platform') }}
+CN = {{ certs_hostname }}
+
+[ v3_req ]
+basicConstraints       = critical, CA:FALSE
+keyUsage               = critical, digitalSignature, keyEncipherment
+extendedKeyUsage       = serverAuth
+subjectAltName         = @alt_names
+
+[ alt_names ]
+{% for dns in certs_san_dns %}
+DNS.{{ loop.index }} = {{ dns }}
+{% endfor %}
+{% for ip in certs_san_ips %}
+IP.{{ loop.index }} = {{ ip }}
+{% endfor %}

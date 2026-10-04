@@ -15,3 +15,10 @@ backend_pyroscope_address: "{{ backend_vmauth_base_url }}"
 backend_otel_traces_endpoint: "{{ backend_vmauth_base_url }}/insert/opentelemetry/v1/traces?tenant=TRACES"
 backend_otel_metrics_endpoint: "{{ backend_vmauth_base_url }}/insert/opentelemetry/v1/metrics?tenant=METRICS"
 backend_audit_logs_endpoint: "{{ backend_vmauth_base_url }}/insert/loki/api/v1/push?tenant=AUDIT_LOGS"
+
+# =====================================================================
+# Modelo de Ollama por defecto (spec 003)
+# Debe incluir el tag (ej. "llama3.2:1b"). El role lo descarga con
+# "ollama pull" tras levantar el stack si aún no está en el volumen.
+# =====================================================================
+ollama_model: "llama3.2:1b"

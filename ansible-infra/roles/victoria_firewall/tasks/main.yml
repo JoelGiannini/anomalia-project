@@ -1,0 +1,127 @@
+---
+# Aisla los puertos de lectura de los backends Victoria (servicios systemd) al
+# puente de contenedores + loopback + el propio host. Ver specs/008 sección 5 y
+# specs/009 (plataformas soportadas y motores de contenedores).
+#
+# Doble backend automático sin colecciones extra (solo módulos ansible.builtin):
+#   - firewalld activo (RHEL-family) -> rich rules vía `firewall-cmd`
+#   - sin firewalld (Debian/Ubuntu)  -> cadena iptables ANOMALIA_VICTORIA_READ
+- name: Detectar si firewalld está activo (sino se usa cadena iptables)
+  ansible.builtin.shell: |
+    if systemctl is-active firewalld >/dev/null 2>&1 && command -v firewall-cmd >/dev/null 2>&1; then
+      echo firewalld
+    else
+      echo iptables
+    fi
+  register: fw_detect
+  changed_when: false
+  check_mode: no
+  when: victoria_firewall_enabled | bool
+
+- name: Definir backend de aislamiento Victoria
+  ansible.builtin.set_fact:
+    victoria_firewall_backend: >-
+      {{ (fw_detect.stdout | trim) if (victoria_firewall_enabled | bool and fw_detect is defined) else 'disabled' }}
+
+- name: Avisar cuando el aislamiento Victoria está deshabilitado
+  ansible.builtin.debug:
+    msg: >-
+      victoria_firewall_enabled=false: el aislamiento L4 de los puertos de
+      lectura ({{ victoria_firewall_ports | join(', ') }}) queda a cargo del
+      security group / network ACL del entorno.
+  when: not (victoria_firewall_enabled | bool)
+
+# ============================================================================
+# Backend firewalld (RHEL-family)
+# ============================================================================
+- name: Permitir orígenes permitidos por puerto (rich rules)
+  ansible.builtin.shell: |
+    set -e
+    RULE="rule family=ipv4 source address={{ item.1 }} port port={{ item.0 }} protocol=tcp accept"
+    if ! firewall-cmd --permanent --query-rich-rule "$RULE" >/dev/null 2>&1; then
+      firewall-cmd --permanent --add-rich-rule "$RULE" >/dev/null
+      echo changed
+    fi
+  loop: "{{ victoria_firewall_ports | product(victoria_firewall_allowed_sources) | list }}"
+  changed_when: "'changed' in item.stdout"
+  check_mode: no
+  when: victoria_firewall_backend == 'firewalld'
+
+- name: Denegar el resto por puerto (rich rules de cierre)
+  ansible.builtin.shell: |
+    set -e
+    RULE="rule family=ipv4 port port={{ item }} protocol=tcp drop"
+    if ! firewall-cmd --permanent --query-rich-rule "$RULE" >/dev/null 2>&1; then
+      firewall-cmd --permanent --add-rich-rule "$RULE" >/dev/null
+      echo changed
+    fi
+  loop: "{{ victoria_firewall_ports }}"
+  changed_when: "'changed' in item.stdout"
+  check_mode: no
+  when: victoria_firewall_backend == 'firewalld'
+
+- name: Recargar reglas (permanent -> runtime)
+  ansible.builtin.command: firewall-cmd --reload
+  changed_when: false
+  when: victoria_firewall_backend == 'firewalld'
+
+- name: Desactivar unit iptables legacy si se usa firewalld
+  ansible.builtin.systemd:
+    name: anomalia-victoria-firewall
+    enabled: no
+    state: stopped
+    daemon_reload: yes
+  when: victoria_firewall_backend == 'firewalld'
+
+# ============================================================================
+# Backend iptables (Debian/Ubuntu u host sin firewalld)
+# ============================================================================
+- name: Verificar que iptables exista
+  ansible.builtin.shell: command -v iptables || echo /usr/sbin/iptables
+  register: firewall_iptables_path
+  changed_when: false
+  check_mode: no
+  when: victoria_firewall_backend == 'iptables'
+
+- name: Crear directorio de reglas
+  ansible.builtin.file:
+    path: /etc/anomalia/firewall
+    state: directory
+    mode: "0750"
+    owner: root
+    group: root
+  when: victoria_firewall_backend == 'iptables'
+
+- name: Renderizar script de aplicacion de reglas
+  ansible.builtin.template:
+    src: apply-victoria-firewall.sh.j2
+    dest: /etc/anomalia/firewall/apply-victoria-firewall.sh
+    mode: "0755"
+    owner: root
+    group: root
+  when: victoria_firewall_backend == 'iptables'
+
+- name: Instalar unit systemd de aplicacion al arranque
+  ansible.builtin.template:
+    src: anomalia-victoria-firewall.service.j2
+    dest: /etc/systemd/system/anomalia-victoria-firewall.service
+    mode: "0644"
+    owner: root
+    group: root
+  when: victoria_firewall_backend == 'iptables'
+
+- name: Recargar systemd y habilitar el servicio
+  ansible.builtin.systemd:
+    name: anomalia-victoria-firewall
+    enabled: yes
+    daemon_reload: yes
+    state: restarted
+  when: victoria_firewall_backend == 'iptables'
+
+- name: Verificar que la cadena quede aplicada
+  ansible.builtin.command: "{{ firewall_iptables_path.stdout }} -L ANOMALIA_VICTORIA_READ -n"
+  register: firewall_chain
+  changed_when: false
+  when:
+    - victoria_firewall_backend == 'iptables'
+    - not ansible_check_mode

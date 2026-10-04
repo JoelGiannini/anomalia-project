@@ -173,22 +173,14 @@
             </section>
 
             <section id="view-traces" class="tab-view hidden space-y-6">
-                <div class="dynamic-card border rounded-2xl p-6 shadow-xl">
-                    <h2 class="text-xl font-bold flex items-center space-x-2 mb-2">
+                <div>
+                    <h2 class="text-xl font-bold flex items-center space-x-2">
                         <i class="fa-solid fa-route dynamic-text-accent"></i>
                         <span>Trazas Distribuidas (Tracing)</span>
                     </h2>
-                    <p class="text-xs opacity-75 mb-6">Monitoreo de latencia y flujo extremo a extremo.</p>
-                    <div id="traces-container" class="space-y-4">
-                        <div class="dynamic-card p-4 rounded-xl border flex items-center justify-between">
-                            <div>
-                                <span class="inline-block px-2 py-1 bg-indigo-500/20 text-indigo-400 text-xs font-semibold rounded mb-1">Jaeger / Tempo</span>
-                                <h4 class="font-semibold">Collector Span Principal</h4>
-                            </div>
-                            <span class="text-emerald-400 text-sm font-mono">Operativo</span>
-                        </div>
-                    </div>
+                    <p class="text-xs opacity-75">Monitoreo de latencia y flujo extremo a extremo.</p>
                 </div>
+                <div id="traces-container" class="grid grid-cols-1 md:grid-cols-3 gap-6"></div>
             </section>
 
             <section id="view-alerts" class="tab-view hidden space-y-6">
@@ -211,22 +203,14 @@
             </section>
 
             <section id="view-profiling" class="tab-view hidden space-y-6">
-                <div class="dynamic-card border rounded-2xl p-6 shadow-xl">
-                    <h2 class="text-xl font-bold flex items-center space-x-2 mb-2">
+                <div>
+                    <h2 class="text-xl font-bold flex items-center space-x-2">
                         <i class="fa-solid fa-microchip dynamic-text-accent"></i>
                         <span>Perfilado Continuo</span>
                     </h2>
-                    <p class="text-xs opacity-75 mb-6">Análisis de CPU y memoria.</p>
-                    <div id="profiling-container" class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div class="dynamic-card p-4 rounded-xl border flex items-center justify-between">
-                            <div>
-                                <span class="inline-block px-2 py-1 bg-purple-500/20 text-purple-400 text-xs font-semibold rounded mb-1">Pyroscope</span>
-                                <h4 class="font-semibold">Backend Profiler</h4>
-                            </div>
-                            <span class="text-emerald-400 text-sm font-mono">Recopilando</span>
-                        </div>
-                    </div>
+                    <p class="text-xs opacity-75">Análisis de CPU y memoria.</p>
                 </div>
+                <div id="profiling-container" class="grid grid-cols-1 md:grid-cols-3 gap-6"></div>
             </section>
 
             <section id="view-dashboards" class="tab-view hidden space-y-6">
@@ -237,15 +221,7 @@
                     </h2>
                     <p class="text-xs opacity-75">Paneles gráficos generales.</p>
                 </div>
-                <div id="dashboards-container" class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div class="dynamic-card border rounded-2xl p-6 shadow-xl flex flex-col justify-between">
-                        <div>
-                            <h3 class="text-lg font-bold mb-2">Overview General de Infraestructura</h3>
-                            <p class="text-xs opacity-75 mb-4">Estado global de nodos y recursos.</p>
-                        </div>
-                        <a href="#" target="_blank" class="w-full dynamic-accent text-center py-2.5 rounded-xl font-medium text-sm transition">Abrir Dashboard</a>
-                    </div>
-                </div>
+                <div id="dashboards-container" class="grid grid-cols-1 md:grid-cols-3 gap-6"></div>
             </section>
 
             <!-- CONTENEDOR DE ADMINISTRACIÓN Y ABMs -->
@@ -391,21 +367,53 @@
                     <div class="dynamic-card border rounded-2xl p-6 shadow-xl space-y-6">
                         <div class="flex justify-between items-center">
                             <h2 class="text-xl font-bold flex items-center space-x-2"><i class="fa-solid fa-brain dynamic-text-accent"></i><span>Configuración de Proveedor IA</span></h2>
-                            <button id="btn-save-ai" class="dynamic-accent text-xs px-4 py-2 rounded-lg transition"><i class="fa-solid fa-save mr-1"></i> Guardar Configuración</button>
+                            <div class="flex items-center space-x-2">
+                                <button id="btn-test-ai" class="dynamic-card border text-xs px-4 py-2 rounded-lg transition"><i class="fa-solid fa-flask mr-1"></i> Probar Conexión</button>
+                                <button id="btn-save-ai" class="dynamic-accent text-xs px-4 py-2 rounded-lg transition"><i class="fa-solid fa-save mr-1"></i> Guardar Configuración</button>
+                            </div>
                         </div>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                             <div>
                                 <label class="block text-xs uppercase opacity-75 mb-1">Proveedor de IA</label>
                                 <select id="ai-provider-select" class="w-full dynamic-input border rounded-xl px-3 py-2 cursor-pointer">
-                                    <option value="openai">OpenAI (GPT-4o / GPT-4 Turbo)</option>
-                                    <option value="anthropic">Anthropic (Claude 3.5 Sonnet)</option>
-                                    <option value="ollama">Ollama (Local LLM)</option>
+                                    <optgroup label="Free (OpenCode Zen)">
+                                        <option value="space-bunny-free">Space Bunny Free</option>
+                                    </optgroup>
+                                    <optgroup label="Local">
+                                        <option value="anomalia_ollama">anomalia_ollama (Local)</option>
+                                    </optgroup>
+                                    <optgroup label="API Key">
+                                        <option value="gemini">Gemini (Google)</option>
+                                    </optgroup>
                                 </select>
+                                <p id="ai-provider-status" class="text-xs mt-1 opacity-75"></p>
                             </div>
-                            <div>
-                                <label class="block text-xs uppercase opacity-75 mb-1">API Key / Endpoint</label>
-                                <input type="password" id="ai-api-key" placeholder="sk-..." class="w-full dynamic-input border rounded-xl px-3 py-2">
+                            <div id="ai-zen-key-field" class="hidden">
+                                <label class="block text-xs uppercase opacity-75 mb-1">API Key Zen (OpenCode)</label>
+                                <input type="password" id="ai-zen-api-key" placeholder="Se guarda en la base de datos" class="w-full dynamic-input border rounded-xl px-3 py-2">
+                                <p class="text-xs mt-1 opacity-75">Es la misma para todos los modelos Free: se pide una sola vez.</p>
                             </div>
+                            <div id="ai-gemini-key-field" class="hidden">
+                                <label class="block text-xs uppercase opacity-75 mb-1">API Key Gemini (Google)</label>
+                                <input type="password" id="ai-gemini-api-key" placeholder="Se guarda en la base de datos" class="w-full dynamic-input border rounded-xl px-3 py-2">
+                            </div>
+                            <div id="ai-gemini-model-field" class="hidden">
+                                <label class="block text-xs uppercase opacity-75 mb-1">Modelo Gemini</label>
+                                <select id="ai-gemini-model" class="w-full dynamic-input border rounded-xl px-3 py-2 cursor-pointer"></select>
+                            </div>
+                        </div>
+                        <div id="ai-test-result" class="hidden text-xs dynamic-card border rounded-xl p-3"></div>
+                    </div>
+                </section>
+
+                <section id="admin-view-audit" class="admin-tab-view hidden space-y-6">
+                    <div class="dynamic-card border rounded-2xl p-6 shadow-xl">
+                        <div class="flex justify-between items-center mb-6">
+                            <h2 class="text-xl font-bold flex items-center space-x-2"><i class="fa-solid fa-clock-rotate-left dynamic-text-accent"></i><span>Registros de Auditoría</span></h2>
+                        </div>
+                        <p class="text-xs opacity-75 mb-6">Consulta de los registros de eventos del tenant de auditoría en VictoriaLogs.</p>
+                        <div id="audit-logs-container" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <p class="text-xs opacity-75">Cargando consolas...</p>
                         </div>
                     </div>
                 </section>

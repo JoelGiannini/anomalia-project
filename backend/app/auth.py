@@ -3,7 +3,6 @@ from datetime import datetime, timedelta
 from fastapi import HTTPException, Security, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
-from jwt import PyJWKClient
 from passlib.context import CryptContext
 from .database import get_db_connection
 
@@ -28,30 +27,6 @@ def create_admin_access_token(data: dict) -> str:
     expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-def verify_oidc_token(credentials: HTTPAuthorizationCredentials = Security(security)):
-    """Valida tokens emitidos por el Proveedor de Identidad OIDC externo (Operadores)"""
-    token = credentials.credentials
-    issuer_url = os.getenv("OIDC_ISSUER_URL", "http://keycloak:8080/realms/aiops")
-    jwks_url = f"{issuer_url}/protocol/openid-connect/certs"
-    
-    try:
-        jwks_client = PyJWKClient(jwks_url)
-        signing_key = jwks_client.get_signing_key_from_jwt(token)
-        
-        payload = jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=["RS256"],
-            issuer=issuer_url,
-            options={"verify_aud": False}
-        )
-        return payload
-    except Exception as e:
-        raise HTTPException(
-            status_code=401,
-            detail=f"Token OIDC inválido o expirado: {str(e)}"
-        )
 
 def verify_admin_token(credentials: HTTPAuthorizationCredentials = Security(security)):
     """Valida tokens JWT internos emitidos para el Administrador del Sistema"""
@@ -95,6 +70,61 @@ def get_current_user_profiles(payload: dict = Depends(verify_any_user_token)):
             status_code=400,
             detail=f"No se pudieron extraer los perfiles del usuario: {str(e)}"
         )
+
+def verify_tenant_access(tenant_id: int):
+    """Verifica si el usuario actual tiene acceso al tenant indicado.
+
+    El acceso se concede por asignación directa (user_tenants) o por cualquiera
+    de los roles del usuario (role_tenants). No hay bypass por rol: el admin
+    global accede por las filas sembradas en role_tenants para el rol 'admin',
+    de modo que la concesión es auditable en la base de datos.
+
+    Los roles se resuelven contra user_roles en la base y no contra los claims
+    del token, para que un token con roles alterados no amplíe privilegios.
+    """
+    def dependency(payload: dict = Depends(verify_any_user_token)) -> dict:
+        username = payload.get("sub") or payload.get("username")
+        if not username:
+            raise HTTPException(status_code=401, detail="Token sin identidad de usuario.")
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM tenants t
+                WHERE t.id = %s
+                  AND t.id IN (
+                      SELECT ut.tenant_id
+                      FROM user_tenants ut
+                      JOIN users u ON u.id = ut.user_id
+                      WHERE u.username = %s
+                      UNION
+                      SELECT rt.tenant_id
+                      FROM role_tenants rt
+                      JOIN user_roles ur ON ur.role_id = rt.role_id
+                      JOIN users ru ON ru.id = ur.user_id
+                      WHERE ru.username = %s
+                  );
+                """,
+                (tenant_id, username, username),
+            )
+            if cursor.fetchone()[0] == 0:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Acceso denegado al tenant {tenant_id}."
+                )
+            return payload
+        except HTTPException as he:
+            raise he
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error validando acceso al tenant: {str(e)}")
+        finally:
+            cursor.close()
+            conn.close()
+    return dependency
+
 
 def verify_profile_access(required_profile: str):
     """Verifica si el usuario actual posee el perfil requerido a través de sus roles asignados."""

@@ -23,6 +23,6 @@
     - role: backend
       tags: ['backend']
       when: inventory_hostname in groups.get('backend_nodes', [])
-    - role: parser
-      tags: ['parser']
-      when: inventory_hostname in groups.get('parser_nodes', [])
+    - role: parses
+      tags: ['parses']
+      when: inventory_hostname in groups.get('parses_nodes', [])

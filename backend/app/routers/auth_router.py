@@ -1,9 +1,10 @@
 import os
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
 from typing import Optional
 from ..database import get_db_connection
 from ..models import ThemeUpdateRequest
 from ..auth import verify_any_user_token, verify_password, hash_password, create_admin_access_token
+from ..parses_provisioner import provision_user_parses
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 
@@ -12,7 +13,7 @@ os.makedirs(MEDIA_DIR, exist_ok=True)
 
 @router.post("/login")
 @router.post("/ui-login")
-def login_user(payload: dict):
+def login_user(payload: dict, background_tasks: BackgroundTasks):
     username = payload.get("username")
     password = payload.get("password")
     
@@ -66,7 +67,11 @@ def login_user(payload: dict):
             raise HTTPException(status_code=401, detail="Credenciales inválidas.")
         
         token = create_admin_access_token({"sub": db_username, "roles": roles, "profiles": profiles, "role": roles[0] if roles else ""})
-        
+
+        # Provisionar Parses (project + datasources + token) de forma NO bloqueante.
+        # provision_user_parses tolera fallos: el login nunca depende de ello.
+        background_tasks.add_task(provision_user_parses, db_username)
+
         return {
             "access_token": token, 
             "token_type": "bearer",

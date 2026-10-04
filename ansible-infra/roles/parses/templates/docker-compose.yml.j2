@@ -1,0 +1,20 @@
+version: '3.8'
+
+networks:
+  anomalia_aiops-net:
+    external: true
+
+services:
+  parses:
+    image: "{{ parses_image }}"
+    container_name: anomalia_parses
+    ports:
+      - "{{ parses_port }}:{{ parses_container_port }}"
+    environment:
+      - PERSES_WEB_LISTEN_ADDRESS=:{{ parses_container_port }}
+      - BACKEND_URL=http://anomalia_gw:8000
+    volumes:
+      - ./config.yaml:/etc/perses/config.yaml:ro
+    networks:
+      - anomalia_aiops-net
+    restart: unless-stopped

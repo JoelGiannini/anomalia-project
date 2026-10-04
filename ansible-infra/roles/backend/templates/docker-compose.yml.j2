@@ -1,8 +1,10 @@
+{#- TLS habilitado únicamente si el role certs materializó el certificado -#}
+{% set tls_enabled = certs_stat is defined and certs_stat.stat.exists %}
 version: '3.8'
 
 networks:
-  aiops-net:
-    driver: bridge
+  anomalia_aiops-net:
+    external: true
 
 services:
   postgres:
@@ -23,7 +25,7 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - aiops-net
+      - anomalia_aiops-net
     restart: unless-stopped
 
   ollama:
@@ -42,32 +44,7 @@ services:
           cpus: '4.0'
           memory: 6G
     networks:
-      - aiops-net
-    restart: unless-stopped
-
-  keycloak:
-    image: quay.io/keycloak/keycloak:24.0.1
-    container_name: anomalia_keycloak
-    environment:
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin_password
-      KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://postgres:5432/anomal_db
-      KC_DB_USERNAME: anomal_user
-      KC_DB_PASSWORD: anomal_password
-      KC_HOSTNAME: anomalia.local
-      KC_HOSTNAME_PORT: 8080
-      KC_HTTP_ENABLED: "true"
-      KC_HOSTNAME_STRICT: "false"
-      KC_HOSTNAME_STRICT_HTTPS: "false"
-    ports:
-      - "8080:8080"
-    command: start-dev
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - aiops-net
+      - anomalia_aiops-net
     restart: unless-stopped
 
   anomaliagw:
@@ -76,45 +53,124 @@ services:
     ports:
       - "80:8000"
       - "8000:8000"
-      - "443:8000"
     environment:
       - DATABASE_URL=postgresql://anomal_user:anomal_password@postgres:5432/anomal_db
       - AI_PROVIDER=ollama
       - OLLAMA_HOST=http://anomalia_ollama:11434
-      - OLLAMA_MODEL=llama3.2
-      - OIDC_ISSUER_URL=http://anomalia.local:8080/realms/aiops
+      - OLLAMA_MODEL={{ ollama_model }}
       - PYROSCOPE_APPLICATION_NAME=anomalia_system
-      
+      - PUBLIC_EXTERNAL_PORT={{ '443' if tls_enabled else '80' }}
+      - FORCE_HTTPS={{ 'true' if tls_enabled else 'false' }}
+
       # Endpoints limpios inyectados desde Ansible (defaults/main.yml)
       - PYROSCOPE_SERVER_ADDRESS={{ backend_pyroscope_address }}
       - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT={{ backend_otel_traces_endpoint }}
       - OTEL_EXPORTER_OTLP_METRICS_ENDPOINT={{ backend_otel_metrics_endpoint }}
       - AUDIT_LOGS_ENDPOINT={{ backend_audit_logs_endpoint }}
+
+      # Provisioning de Parses (spec 008). El gateway habla con el contenedor
+      # "parses" por nombre DNS y apunta los datasources a su propio proxy.
+      # El proxy va por HTTPS contra el servicio TLS interno: el gateway en claro
+      # corre con FORCE_HTTPS=true y su middleware de redireccion devuelve 301 al
+      # proxy de Parses, que no puede seguirlo contra un puerto HTTP plano.
+      # PARSES_MIGRATE_URL no cuelga de /api/v1: es POST /api/migrate.
+      - PARSES_API_URL=http://parses:8080/api/v1
+      - PARSES_MIGRATE_URL=http://parses:8080/api/migrate
+      # UI de Parses (Perses) servida por el proxy de UIs con scope "dashboards".
+      - PARSES_UI_URL=http://parses:8080
+      - PARSES_PROXY_BASE={{ 'https://anomalia_gw_tls:8443/api/v1/parses/datasources'
+                         if tls_enabled
+                         else 'http://anomalia_gw:8000/api/v1/parses/datasources' }}
+      # 24h: alarga la vida del token que Perses usa contra el proxy de datasources
+      # (spec 008). Se re-emite en cada login.
+      - PARSES_PROXY_TOKEN_TTL=86400
+{% if tls_enabled %}
+      # CA privada que firma el certificado del gateway. Parses la valida contra
+      # el Secret del proxy (spec 008 §3.2).
+      - PARSES_TLS_CA_FILE=/certs/ca.crt
+{% endif %}
     volumes:
       - /opt/anomalia/backend:/opt/anomalia/backend
       - /opt/anomalia/backend/media:/app/media
       - /opt/anomalia/backend/playbooks:/opt/anomalia/backend/playbooks
-      - /var/run/docker.sock:/var/run/docker.sock
-    command: >
-      uvicorn app.main:app --host 0.0.0.0 --port 8000
-      {{ '--ssl-keyfile /certs/privkey.pem --ssl-certfile /certs/fullchain.pem' if cert_file.stat.exists else '' }}
+{% if tls_enabled %}
+      - /opt/anomalia/certs:/certs:ro
+{% endif %}
+      - "{{ anomalia_container_socket }}:/var/run/docker.sock"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     user: "root"
     labels:
       scrape: "true"
       port: "8000"
       path: "/metrics"
     extra_hosts:
-      - "anomalia.local:host-gateway"
+      - "{{ certs_hostname | default('anomalia.local') }}:{{ anomalia_extra_host_gateway }}"
     depends_on:
       postgres:
         condition: service_healthy
       ollama:
         condition: service_started
-      keycloak:
+    networks:
+      - anomalia_aiops-net
+    restart: unless-stopped
+
+{% if tls_enabled %}
+  anomaliagw_tls:
+    build: .
+    container_name: anomalia_gw_tls
+    ports:
+      - "443:8443"
+    environment:
+      - DATABASE_URL=postgresql://anomal_user:anomal_password@postgres:5432/anomal_db
+      - AI_PROVIDER=ollama
+      - OLLAMA_HOST=http://anomalia_ollama:11434
+      - OLLAMA_MODEL={{ ollama_model }}
+      - PYROSCOPE_APPLICATION_NAME=anomalia_system
+      - PUBLIC_EXTERNAL_PORT=443
+      - FORCE_HTTPS=false
+
+      # Endpoints limpios inyectados desde Ansible (defaults/main.yml)
+      - PYROSCOPE_SERVER_ADDRESS={{ backend_pyroscope_address }}
+      - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT={{ backend_otel_traces_endpoint }}
+      - OTEL_EXPORTER_OTLP_METRICS_ENDPOINT={{ backend_otel_metrics_endpoint }}
+      - AUDIT_LOGS_ENDPOINT={{ backend_audit_logs_endpoint }}
+
+      # Provisioning de Parses (spec 008). El gateway habla con el contenedor
+      # "parses" por nombre DNS y apunta los datasources a su propio proxy.
+      # Mismo destino https que el gateway en claro: ambos ejecutan el
+      # provisioner, asi que los dos deben apuntar al servicio TLS interno.
+      # PARSES_MIGRATE_URL no cuelga de /api/v1: es POST /api/migrate.
+      - PARSES_API_URL=http://parses:8080/api/v1
+      - PARSES_MIGRATE_URL=http://parses:8080/api/migrate
+      # UI de Parses (Perses) servida por el proxy de UIs con scope "dashboards".
+      - PARSES_UI_URL=http://parses:8080
+      - PARSES_PROXY_BASE={{ 'https://anomalia_gw_tls:8443/api/v1/parses/datasources'
+                         if tls_enabled
+                         else 'http://anomalia_gw:8000/api/v1/parses/datasources' }}
+      # 24h: alarga la vida del token que Perses usa contra el proxy de datasources
+      # (spec 008). Se re-emite en cada login.
+      - PARSES_PROXY_TOKEN_TTL=86400
+      - PARSES_TLS_CA_FILE=/certs/ca.crt
+    volumes:
+      - /opt/anomalia/backend:/opt/anomalia/backend
+      - /opt/anomalia/backend/media:/app/media
+      - /opt/anomalia/backend/playbooks:/opt/anomalia/backend/playbooks
+      - /opt/anomalia/certs:/certs:ro
+      - "{{ anomalia_container_socket }}:/var/run/docker.sock"
+    command: >
+      uvicorn app.main:app --host 0.0.0.0 --port 8443
+      --ssl-keyfile /certs/privkey.pem
+      --ssl-certfile /certs/fullchain.pem
+    user: "root"
+    extra_hosts:
+      - "{{ certs_hostname | default('anomalia.local') }}:{{ anomalia_extra_host_gateway }}"
+    depends_on:
+      anomaliagw:
         condition: service_started
     networks:
-      - aiops-net
+      - anomalia_aiops-net
     restart: unless-stopped
+{% endif %}
 
 volumes:
   ollama_data:

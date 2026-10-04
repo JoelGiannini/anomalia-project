@@ -1,8 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from typing import List, Optional
-import psycopg2
+import json
+import logging
+import os
+import shutil
 import subprocess
+import tempfile
+import psycopg2
 import socket
 from ..database import get_db_connection
 from ..models import (
@@ -16,6 +21,19 @@ from ..models import (
 from ..auth import verify_admin_token, hash_password, get_current_user_profiles, verify_profile_access
 
 router = APIRouter(prefix="/api/v1/admin", tags=["Administration"])
+
+logger = logging.getLogger(__name__)
+
+# Componentes que ansible-infra/install-binaries.yml sabe actualizar. Cada valor
+# debe coincidir con el 'servicio' aceptado por el playbook; 'parses' y 'backend'
+# quedan fuera a propósito porque se gestionan solo con el playbook de despliegue.
+ANSIBLE_UPDATABLE_COMPONENTS = frozenset({
+    "vlstorage", "vlinsert", "vlselect",
+    "vmstorage", "vminsert", "vmselect",
+    "vtstorage", "vtinsert", "vtselect",
+    "vmagent", "vmauth", "vmalert",
+    "pyroscope", "alertmanager",
+})
 
 @router.get("/catalogs", dependencies=[Depends(verify_any_user_token := verify_profile_access("users_manager"))])
 def get_catalogs():
@@ -409,21 +427,39 @@ def delete_profile(profile_id: int):
 # --- INFRASTRUCTURE (infra_manager) ---
 @router.get("/infra/component-types", dependencies=[Depends(verify_profile_access("infra_manager"))])
 def get_component_types():
+    """Catálogo de tipos de nodo de infraestructura.
+
+    'value' es el identificador que se persiste en infrastructure_nodes.component_type
+    y debe coincidir con los 'type' que siembra roles/backend/templates/init.sql.j2 y
+    con los 'servicio' que acepta ansible-infra/install-binaries.yml. 'updatable'
+    indica si existe una sección del playbook capaz de reinstalar el componente.
+    """
+    catalog = [
+        ("vlstorage", "VictoriaLogs Storage"),
+        ("vlinsert", "VictoriaLogs Insert"),
+        ("vlselect", "VictoriaLogs Select"),
+        ("vmstorage", "VictoriaMetrics Storage"),
+        ("vminsert", "VictoriaMetrics Insert"),
+        ("vmselect", "VictoriaMetrics Select"),
+        ("vtstorage", "VictoriaTraces Storage"),
+        ("vtinsert", "VictoriaTraces Insert"),
+        ("vtselect", "VictoriaTraces Select"),
+        ("vmagent", "VMAgent"),
+        ("vmauth", "VMAuth"),
+        ("vmalert", "VMAlert"),
+        ("pyroscope", "Pyroscope"),
+        ("alertmanager", "Alertmanager"),
+        ("parses", "Parses"),
+        ("backend", "Backend"),
+    ]
     return {
         "component_types": [
-            {"value": "vminsert", "label": "VictoriaMetrics Insert"},
-            {"value": "vmselect", "label": "VictoriaMetrics Select"},
-            {"value": "vmstorage", "label": "VictoriaMetrics Storage"},
-            {"value": "vlogs_insert", "label": "VictoriaLogs Insert"},
-            {"value": "vlogs_select", "label": "VictoriaLogs Select"},
-            {"value": "vlogs_storage", "label": "VictoriaLogs Storage"},
-            {"value": "alertmanager", "label": "Alertmanager"},
-            {"value": "vmalert", "label": "VMAlert"},
-            {"value": "vmauth", "label": "VMAuth"},
-            {"value": "vmagent", "label": "VMAgent"},
-            {"value": "pyroscope", "label": "Pyroscope"},
-            {"value": "parser", "label": "Parser"},
-            {"value": "backend", "label": "Backend"}
+            {
+                "value": value,
+                "label": label,
+                "updatable": value in ANSIBLE_UPDATABLE_COMPONENTS,
+            }
+            for value, label in catalog
         ]
     }
 
@@ -442,6 +478,7 @@ def get_infra_nodes():
                 "ip_address": r[2],       
                 "service_ip": r[3] if r[3] else r[2],  
                 "component_type": r[4],
+                "updatable": r[4] in ANSIBLE_UPDATABLE_COMPONENTS,
                 "port": r[5],
                 "status": r[6],
                 "description": r[7],
@@ -522,38 +559,82 @@ def run_infra_ansible_update(node_id: int):
     admin_pass = node["admin_password"]
     component = node["component_type"]
 
-    cmd = [
-        "ansible-playbook",
-        "-i", f"{target_ip},",
-        playbook_path,
-        "-e", f"ansible_user={admin_user}",
-        "-e", f"servicio={component} gestionar_servicios=true"
-    ]
-
-    if admin_pass:
-        cmd.extend([
-            "-e", f'ansible_password="{admin_pass}"',
-            "-e", f'ansible_become_password="{admin_pass}"'
-        ])
-
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd="/app/playbooks",
-            capture_output=True,
-            text=True,
-            timeout=300
+    if not os.path.isfile(playbook_path):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Playbook no encontrado dentro del contenedor: {playbook_path}",
         )
 
+    if shutil.which("ansible-playbook") is None:
+        raise HTTPException(
+            status_code=500,
+            detail="ansible-playbook no está instalado en la imagen del gateway.",
+        )
+
+    if component not in ANSIBLE_UPDATABLE_COMPONENTS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"El componente '{component}' no se actualiza con install-binaries.yml. "
+                f"Componentes soportados: {', '.join(sorted(ANSIBLE_UPDATABLE_COMPONENTS))}."
+            ),
+        )
+
+    extra_vars: dict[str, object] = {
+        "ansible_user": admin_user,
+        "servicio": component,
+        "gestionar_servicios": True,
+    }
+    if admin_pass:
+        extra_vars["ansible_password"] = admin_pass
+        extra_vars["ansible_become_password"] = admin_pass
+
+    # Las credenciales van en un archivo 0600 dentro de un directorio privado en
+    # lugar de argv: con -e key=valor la contraseña queda legible en 'ps' para
+    # cualquier proceso del contenedor.
+    secret_dir = tempfile.mkdtemp(prefix="anomalia-ansible-")
+    extra_vars_path = os.path.join(secret_dir, "extra-vars.json")
+    try:
+        fd = os.open(extra_vars_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            json.dump(extra_vars, handle)
+
+        cmd = [
+            "ansible-playbook",
+            "-i", f"{target_ip},",
+            playbook_path,
+            "--extra-vars", f"@{extra_vars_path}",
+        ]
+        logger.info(
+            "Ejecutando install-binaries.yml nodo=%s componente=%s host=%s usuario=%s",
+            node_id, component, target_ip, admin_user,
+        )
+
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd="/app/playbooks",
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+        except subprocess.TimeoutExpired:
+            logger.error(
+                "Timeout de install-binaries.yml nodo=%s componente=%s", node_id, component
+            )
+            raise HTTPException(status_code=504, detail="El playbook excedió el tiempo límite de ejecución (Timeout).")
+
         if result.returncode == 0:
+            logger.info("Nodo %s (%s) actualizado correctamente", node_id, component)
             return {"status": "success", "message": "Playbook ejecutado exitosamente OK.", "stdout": result.stdout}
-        else:
-            error_details = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
-            raise HTTPException(status_code=500, detail=error_details)
-            
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=504, detail="El playbook excedió el tiempo límite de ejecución (Timeout).")
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=500, detail=str(e))
+
+        error_details = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+        # El detalle va en el body y también al log del contenedor: sin esto el
+        # fallo quedaba invisible salvo por un 500 genérico en el frontend.
+        logger.error(
+            "install-binaries.yml fallo nodo=%s componente=%s rc=%s\n%s",
+            node_id, component, result.returncode, error_details,
+        )
+        raise HTTPException(status_code=500, detail=error_details)
+    finally:
+        shutil.rmtree(secret_dir, ignore_errors=True)

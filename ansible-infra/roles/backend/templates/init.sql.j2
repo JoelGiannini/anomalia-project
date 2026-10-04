@@ -36,6 +36,25 @@ CREATE TABLE IF NOT EXISTS tenants (
     environment VARCHAR(50),                -- Ej: 'work', 'live', 'play', 'default'
     port INTEGER DEFAULT 8427,              -- Puerto de escucha del servicio (ej: vmauth, vm, vlogs, pyroscope)
     description TEXT,
+    -- Marca el tenant cuya telemetría es pista de auditoría. No basta con el
+    -- type ('logs'): AUDIT_LOGS también es de tipo logs y sin esta bandera
+    -- aparecía duplicado en la pestaña Logs y ausente de la de Auditoría.
+    is_audit BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 4.1 Tabla que define el endpoint de LECTURA de cada tenant (base de los datasources de Perses).
+-- tenants.port es el puerto de INSERCIÓN y no permite derivar la URL de lectura, por eso
+-- se modela aparte. scoping indica cómo se aísla el tenant en el backend Victoria.
+CREATE TABLE IF NOT EXISTS tenant_datasources (
+    tenant_id INTEGER PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+    kind VARCHAR(50) NOT NULL,              -- Backend de almacenamiento: VictoriaMetrics | VictoriaLogs | VictoriaTraces | Pyroscope
+    read_url TEXT NOT NULL,                 -- URL base del backend de lectura
+    scoping VARCHAR(20) NOT NULL DEFAULT 'header',  -- 'path' = prefijo /select/a:p/ | 'header' = AccountID/ProjectID
+    account_id INTEGER,                     -- Valor de aislamiento (NULL si no aplica)
+    project_id INTEGER,                     -- Valor de aislamiento (NULL si no aplica)
+    org_id VARCHAR(255),                    -- Valor de X-Scope-OrgID (solo tipo profiles)
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -64,7 +83,18 @@ CREATE TABLE IF NOT EXISTS user_roles (
     PRIMARY KEY (user_id, role_id)
 );
 
--- 8. Crear tabla de sesiones para validación por session_id
+-- 8. Tabla intermedia para asignación directa de tenants por usuario (N a M)
+-- Debe declararse después de 'users' por la clave foránea.
+CREATE TABLE IF NOT EXISTS user_tenants (
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    tenant_id INTEGER REFERENCES tenants(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, tenant_id)
+);
+
+-- Índices de acceso a tenants por usuario
+CREATE INDEX IF NOT EXISTS idx_user_tenants_user_id ON user_tenants(user_id);
+
+-- 9. Crear tabla de sesiones para validación por session_id
 CREATE TABLE IF NOT EXISTS sessions (
     id SERIAL PRIMARY KEY,
     session_id VARCHAR(255) UNIQUE NOT NULL,
@@ -76,6 +106,28 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- Índices de rendimiento para sesiones
 CREATE INDEX IF NOT EXISTS idx_sessions_session_id ON sessions(session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+
+-- Tickets de un solo uso para abrir la UI de Victoria de un tenant.
+-- El token JWT vive en localStorage y no viaja en la navegacion, asi que el
+-- frontend canjea un ticket opaco por la sesion y navega a la UI con el.
+-- El tenant y el usuario se congelan aqui: la UI servida no vuelve a consultar
+-- la autorizacion, por lo que el ticket caduca a los pocos minutos.
+CREATE TABLE IF NOT EXISTS ui_tickets (
+    id SERIAL PRIMARY KEY,
+    ticket VARCHAR(128) UNIQUE NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    -- Alcance de la tarjeta que emitio el ticket (UI_SCOPE_PROFILE). Determina el
+    -- upstream al que se monta la consola: los scopes de Victoria van a su UI,
+    -- "dashboards" va a Parses. Ver specs/010.
+    scope VARCHAR(32) NOT NULL DEFAULT 'metrics',
+    expires_at TIMESTAMP NOT NULL,
+    consumed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_ui_tickets_ticket ON ui_tickets(ticket);
+CREATE INDEX IF NOT EXISTS idx_ui_tickets_expires ON ui_tickets(expires_at);
 
 -- =========================================================================
 -- DATOS INICIALES (SEEDERS)
@@ -103,6 +155,7 @@ INSERT INTO profiles (code, name, description) VALUES
 ('access_Continuous_Profiling', 'Acceso a Continuous Profiling', 'Permite ver el perfilado continuo de aplicaciones y servicios'),
 ('access_traces', 'Acceso a Trazas', 'Permite visualizar y analizar trazas distribuidas'),
 ('access_alerts', 'Acceso a Alertas', 'Permite visualizar el flujo de alertas y diagnósticos de IA'),
+('access_dasboards', 'Acceso a Dashboards', 'Permite abrir la UI de Parses con los dashboards del tenant'),
 ('tenants_manager', 'Gestión de Tenants', 'Permite dar de alta y administrar AccountID y ProjectID'),
 ('alerts_manager', 'Gestión de Alertas', 'Permite configurar, silenciar y administrar reglas de alertas'),
 ('infra_manager', 'Gestión de Infraestructura', 'Permite administrar nodos, componentes y OIDC'),
@@ -123,7 +176,7 @@ WHERE r.name = 'admin'
 -- 2. viewer (Métricas, logs, profiling, trazas y alertas)
 INSERT INTO role_profiles (role_id, profile_id)
 SELECT r.id, p.id FROM roles r, profiles p 
-WHERE r.name = 'viewer' AND p.code IN ('access_metrics', 'access_logs', 'access_Continuous_Profiling', 'access_traces', 'access_alerts')
+WHERE r.name = 'viewer' AND p.code IN ('access_metrics', 'access_logs', 'access_Continuous_Profiling', 'access_traces', 'access_alerts', 'access_dasboards')
   AND NOT EXISTS (
       SELECT 1 FROM role_profiles rp WHERE rp.role_id = r.id AND rp.profile_id = p.id
   );
@@ -177,17 +230,53 @@ WHERE r.name = 'approvers' AND p.code = 'approvers'
   );
 
 -- Insertar tenants sincronizados exactamente con vmauth.yml.j2
-INSERT INTO tenants (name, type, account_id, project_id, environment, port, description) VALUES 
-('METRICS', 'metrics', 0, 0, 'default', 8400, 'Tenant para métricas de infraestructura (VictoriaMetrics - vminsert)'),
-('TRACES', 'traces', 0, 1, 'default', 8490, 'Tenant para trazas distribuidas OTLP (VictoriaTraces - vtinsert)'),
-('PROFILES', 'profiles', NULL, NULL, 'default', 4040, 'Tenant de perfilado continuo vía Pyroscope (X-Scope-OrgID: PROFILES)'),
-('AUDIT_LOGS', 'logs', 0, 3, 'default', 8480, 'Tenant para logs de auditoría (VictoriaLogs - vlinsert)')
+INSERT INTO tenants (name, type, account_id, project_id, environment, port, description, is_audit) VALUES 
+('METRICS', 'metrics', 0, 0, 'default', 8400, 'Tenant para métricas de infraestructura (VictoriaMetrics - vminsert)', false),
+('TRACES', 'traces', 0, 1, 'default', 8490, 'Tenant para trazas distribuidas OTLP (VictoriaTraces - vtinsert)', false),
+('PROFILES', 'profiles', NULL, NULL, 'default', 4040, 'Tenant de perfilado continuo vía Pyroscope (X-Scope-OrgID: PROFILES)', false),
+('AUDIT_LOGS', 'logs', 0, 3, 'default', 8480, 'Tenant para logs de auditoría (VictoriaLogs - vlinsert)', true)
 ON CONFLICT (name) DO UPDATE SET 
     type = EXCLUDED.type,
     account_id = EXCLUDED.account_id,
     project_id = EXCLUDED.project_id,
     port = EXCLUDED.port,
-    description = EXCLUDED.description;
+    description = EXCLUDED.description,
+    is_audit = EXCLUDED.is_audit;
+
+-- Definir el endpoint de lectura de cada tenant a partir de los nodos select del inventario.
+-- El tenant se empareja por nombre, de modo que el seed es idempotente y sobrevive a un
+-- destroy/redeploy sin duplicar filas.
+--
+-- Nota sobre 'kind': identifica el backend de almacenamiento, NO el formato de la API.
+--   METRICS      -> VictoriaMetrics,  API Prometheus  (prefijo /select/<a>:<p>/prometheus)
+--   AUDIT_LOGS   -> VictoriaLogs,     API LogsQL     (scoping por headers)
+--   PROFILES     -> Pyroscope,        API /pyroscope/render
+--   TRACES       -> VictoriaTraces,   API compatible con Jaeger (/select/jaeger/api/*);
+--                   se llama VictoriaTraces porque ese es el componente desplegado. No hay
+--                   ningun componente Jaeger en el stack. VictoriaTraces NO expone la API
+--                   de Tempo (/api/v2/...), por lo que el plugin Tempo de Perses no aplica.
+{% set vm_sel = hostvars[groups['vm_select_nodes'][0]] %}
+{% set vl_sel = hostvars[groups['vlogs_select_nodes'][0]] %}
+{% set vt_sel = hostvars[groups['vt_select_nodes'][0]] %}
+{% set pyro   = hostvars[groups['pyroscope_nodes'][0]] %}
+INSERT INTO tenant_datasources (tenant_id, kind, read_url, scoping, account_id, project_id, org_id, enabled)
+SELECT t.id, v.kind, v.read_url, v.scoping, v.account_id, v.project_id, v.org_id, TRUE
+FROM tenants t
+JOIN (VALUES
+    ('METRICS',     'VictoriaMetrics', 'http://{{ vm_sel.vmselect_ip | default(vm_sel.ansible_host) }}:{{ vm_sel.vmselect_port }}', 'path',   0, 0, NULL),
+    ('AUDIT_LOGS',  'VictoriaLogs', 'http://{{ vl_sel.vlselect_ip | default(vl_sel.ansible_host) }}:{{ vl_sel.vlselect_port }}',     'header', 0, 3, NULL),
+    ('PROFILES',    'Pyroscope',    'http://{{ pyro.pyroscope_ip | default(pyro.ansible_host) }}:{{ pyro.pyroscope_port }}',         'header', NULL, NULL, 'PROFILES'),
+    ('TRACES',      'VictoriaTraces', 'http://{{ vt_sel.vtselect_ip | default(vt_sel.ansible_host) }}:{{ vt_sel.vtselect_port }}', 'header', 0, 1, NULL)
+) AS v(tenant_name, kind, read_url, scoping, account_id, project_id, org_id)
+  ON v.tenant_name = t.name
+ON CONFLICT (tenant_id) DO UPDATE SET
+    kind = EXCLUDED.kind,
+    read_url = EXCLUDED.read_url,
+    scoping = EXCLUDED.scoping,
+    account_id = EXCLUDED.account_id,
+    project_id = EXCLUDED.project_id,
+    org_id = EXCLUDED.org_id,
+    enabled = TRUE;
 
 -- Asignar acceso a todos los tenants al rol 'admin' por defecto
 INSERT INTO role_tenants (role_id, tenant_id)
@@ -261,10 +350,26 @@ CREATE TABLE IF NOT EXISTS oidc_providers (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Insertar un proveedor OIDC de ejemplo base
-INSERT INTO oidc_providers (name, client_id, client_secret, issuer_url, redirect_uri, is_active) VALUES
-('Keycloak AIOps', 'anomalia-client-id', 'change-me-secret', 'http://keycloak:8080/realms/aiops', 'https://anomalia.local/api/v1/auth/callback', true)
-ON CONFLICT (name) DO NOTHING;
+-- Nota: no se siembra ningún proveedor OIDC. Keycloak se retiró del stack por
+-- ser una dependencia exclusiva de pruebas. Los proveedores reales se dan de
+-- alta desde la app móvil (GET/POST /api/v1/oidc/providers) o por consola SQL,
+-- con secretos gestionados fuera del repositorio.
+
+-- Tabla de configuración del proveedor de IA (fila única). Las API keys
+-- (Zen / Gemini) se ingresan desde el panel de control y viven solo aquí,
+-- nunca en archivos del repositorio. Ver specs/003-aiops-alert-pipeline.md §2.
+CREATE TABLE IF NOT EXISTS ai_settings (
+    id SERIAL PRIMARY KEY,
+    selected_provider VARCHAR(100) DEFAULT 'anomalia_ollama',
+    zen_api_key TEXT DEFAULT '',
+    gemini_api_key TEXT DEFAULT '',
+    gemini_model VARCHAR(100) DEFAULT 'gemini-3.5-flash-lite',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO ai_settings (selected_provider)
+SELECT 'anomalia_ollama'
+WHERE NOT EXISTS (SELECT 1 FROM ai_settings);
 
 -- Tabla para almacenar el historial de alertas y análisis de IA
 CREATE TABLE IF NOT EXISTS alert_history (
@@ -304,7 +409,7 @@ CREATE TABLE IF NOT EXISTS user_devices (
     {'group': 'alertmanager_nodes', 'type': 'alertmanager', 'port_var': 'alertmanager_port', 'ip_var': 'alertmanager_ip', 'default_port': 9093, 'desc': 'Gestor de alertas Alertmanager'},
     {'group': 'vmalert_nodes', 'type': 'vmalert', 'port_var': 'vmalert_port', 'ip_var': 'vmalert_ip', 'default_port': 8880, 'desc': 'Evaluador de reglas Vmalert'},
     {'group': 'backend_nodes', 'type': 'backend', 'port_var': 'backend_port', 'ip_var': 'backend_ip', 'default_port': 5000, 'desc': 'Servicio Backend de la aplicación'},
-    {'group': 'parser_nodes', 'type': 'parser', 'port_var': 'parser_port', 'ip_var': 'parser_ip', 'default_port': 8080, 'desc': 'Servicio Parser de datos'}
+    {'group': 'parses_nodes', 'type': 'parses', 'port_var': 'parses_port', 'ip_var': 'parses_ip', 'default_port': 8090, 'desc': 'Servicio Parses de datos'}
 ] %}
 
 {% set ns = namespace(rows=[]) %}

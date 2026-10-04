@@ -1,0 +1,10 @@
+---
+parses_port: 8090
+parses_container_port: 8080
+# Imagen fijada por digest: el tag :latest es un snapshot mutable y la forma de la
+# API REST cambio entre versiones. Pin a este digest reproduce exactamente el build
+# reverse-engineered en specs/008 (26-09-2026, revision 3b2461b5).
+parses_image: "persesdev/perses@sha256:b6d075c26e3fbbe20b9e6e63a94fc822ba06cd6496c9fcb1b15c664675b4cf37"
+# Habilita /explore (selector nativo de profile type de Pyroscope, datasources
+# del proyecto y editor de queries). Ver specs/008 §9.
+parses_explorer_enable: true

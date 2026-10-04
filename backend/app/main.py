@@ -4,13 +4,13 @@ import json
 import psutil
 import pyroscope
 import httpx
+from typing import Any, Awaitable, Callable
 from fastapi import FastAPI, Request, Response, Depends
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import Gauge, generate_latest, CONTENT_TYPE_LATEST
-from sqlalchemy.orm import Session
 
 from opentelemetry import trace, metrics
 from opentelemetry.sdk.trace import TracerProvider
@@ -22,10 +22,11 @@ from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExp
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.resources import Resource
 
-from .database import init_db, get_db
-from .auth import hash_password
+from .database import init_db
+from .auth import hash_password, verify_any_user_token
 from .oidc import router as oidc_router
-from .routers import auth_router, admin_router, infra_router
+from .ai_router import router as ai_router
+from .routers import auth_router, admin_router, infra_router, parses_router, ui_proxy_router
 
 app = FastAPI(title="Backend ABM - Alert Management")
 
@@ -45,6 +46,42 @@ app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 SERVICE_NAME = "anomalia_system"
 AUDIT_LOGS_ENDPOINT = os.getenv("AUDIT_LOGS_ENDPOINT")
 PYROSCOPE_SERVER_ADDRESS = os.getenv("PYROSCOPE_SERVER_ADDRESS", "http://localhost:4040")
+
+# --- CONFIGURACIÓN HTTPS DEL GATEWAY ---
+FORCE_HTTPS = os.getenv("FORCE_HTTPS", "false").strip().lower() == "true"
+PUBLIC_EXTERNAL_PORT = os.getenv("PUBLIC_EXTERNAL_PORT", "443" if FORCE_HTTPS else "80")
+
+# Rutas internas que nunca se redirigen: vmagent scrapea /metrics por HTTP
+# contra el gateway en claro y los health checks no deben seguir redirects.
+HTTPS_EXEMPT_PATHS = frozenset({"/metrics", "/healthz"})
+
+# Hosts de loopback: escapes de desarrollo local sobre HTTP.
+HTTPS_EXEMPT_HOSTS = frozenset({"", "localhost", "127.0.0.1", "::1"})
+
+
+@app.middleware("http")
+async def enforce_https_redirect(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """Redirige el tráfico del gateway en claro hacia HTTPS cuando hay TLS.
+
+    Solo se activa si FORCE_HTTPS=true, que Ansible inyecta únicamente cuando
+    existe un certificado en /opt/anomalia/certs. Sin certificado el gateway
+    sigue sirviendo en HTTP para no bloquear el desarrollo.
+    """
+    if not FORCE_HTTPS or request.url.path in HTTPS_EXEMPT_PATHS:
+        return await call_next(request)
+
+    host = request.headers.get("host", "").split(":")[0]
+    if host.lower() in HTTPS_EXEMPT_HOSTS:
+        return await call_next(request)
+
+    port_suffix = "" if PUBLIC_EXTERNAL_PORT == "443" else f":{PUBLIC_EXTERNAL_PORT}"
+    target = f"https://{host}{port_suffix}{request.url.path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    return RedirectResponse(url=target, status_code=301)
+
 
 # --- CONFIGURACIÓN DE AUDITORÍA A VICTORIALOGS (LOKI API) ---
 def send_audit_log(username: str, action: str, details: str, ip_address: str, status: str = "SUCCESS"):
@@ -186,20 +223,95 @@ except Exception as e:
 
 # 4. Incluir routers de la API
 app.include_router(oidc_router)
+app.include_router(ai_router)
 app.include_router(auth_router.router)
 app.include_router(admin_router.router)
 app.include_router(infra_router.router)
+app.include_router(parses_router.router)
+app.include_router(ui_proxy_router.router)
 
-# Ruta puente para solucionar el error 404 detectado en /api/v1/tenants/my-tenants
+# Estrategia de aislamiento en vmauth derivada del tipo de tenant.
+# metrics/traces/logs se aíslan por AccountID/ProjectID numéricos;
+# profiles se aíslan por el header X-Scope-OrgID.
+TENANT_STRATEGY_BY_TYPE = {
+    "metrics": "numeric",
+    "traces": "numeric",
+    "logs": "numeric",
+    "profiles": "x-scope-orgid",
+}
+
+
 @app.get("/api/v1/tenants/my-tenants")
-def get_my_tenants_alias(request: Request, db: Session = Depends(get_db)):
-    from sqlalchemy import text
+def get_my_tenants_alias(payload: dict = Depends(verify_any_user_token)) -> dict[str, list[dict[str, Any]]]:
+    """Devuelve los tenants visibles para el usuario autenticado.
+
+    El acceso es la unión de dos caminos:
+      1. Asignación directa en user_tenants.
+      2. Asignación por cualquiera de los roles del usuario en role_tenants.
+
+    No hay bypass hardcodeado para el admin: su acceso proviene de las filas en
+    role_tenants sembradas para el rol 'admin', de modo que la granting es
+    auditable en la base. Un tenant nuevo debe asignarse explícitamente.
+    """
+    from .database import get_db_connection
+
+    username = payload.get("sub") or payload.get("username")
+    if not username:
+        return {"tenants": []}
+
+    conn = None
+    cursor = None
     try:
-        result = db.execute(text("SELECT id, name, type, environment, port, description FROM tenants")).fetchall()
-        tenants_list = [{"id": r[0], "name": r[1], "type": r[2], "environment": r[3], "port": r[4], "description": r[5]} for r in result]
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT t.id, t.name, t.type, t.account_id, t.project_id,
+                   t.environment, t.port, t.description, t.is_audit
+            FROM tenants t
+            WHERE t.id IN (
+                SELECT ut.tenant_id
+                FROM user_tenants ut
+                JOIN users u ON u.id = ut.user_id
+                WHERE u.username = %s
+                UNION
+                SELECT rt.tenant_id
+                FROM role_tenants rt
+                JOIN user_roles ur ON ur.role_id = rt.role_id
+                JOIN users ru ON ru.id = ur.user_id
+                JOIN roles r ON r.id = rt.role_id
+                WHERE ru.username = %s
+            )
+            ORDER BY t.name;
+            """,
+            (username, username),
+        )
+        rows = cursor.fetchall()
+        tenants_list = [
+            {
+                "id": r[0],
+                "name": r[1],
+                "type": r[2] or "metrics",
+                "account_id": r[3],
+                "project_id": r[4],
+                "environment": r[5],
+                "port": r[6],
+                "description": r[7],
+                # Bandera que separa el tenant de auditoría del resto de logs
+                # en la UI (ui.js: CONSOLES.logs / CONSOLES.audit).
+                "is_audit": r[8],
+                "strategy": TENANT_STRATEGY_BY_TYPE.get(r[2] or "metrics", "numeric"),
+            }
+            for r in rows
+        ]
         return {"tenants": tenants_list}
     except Exception:
         return {"tenants": []}
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if conn is not None:
+            conn.close()
 
 # --- MÉTRICAS DE SISTEMA (ANOMALIA) ---
 CPU_USAGE_GAUGE = Gauge('anomalia_system_cpu_usage_percent', 'Uso actual de CPU del sistema')

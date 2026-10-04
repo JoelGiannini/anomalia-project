@@ -13,7 +13,47 @@
     nombre_usuario: "anomalia"
 
   pre_tasks:
-    - name: 1. Generar clave aleatoria con OpenSSL en el nodo de control
+    - name: Detectar motor de contenedores y Compose (facts compartidos con el destroy)
+      ansible.builtin.include_tasks: tasks/detect_container_stack.yml
+      tags: always
+
+    - name: 1b. Abortar si no hay motor de contenedores disponible
+      ansible.builtin.fail:
+        msg: >-
+          No se detectó Docker CE ni Podman (rootful) con socket activo.
+          Ámbos son prerequisitos del stack (backend/parses usan Compose).
+      when: engine_detect.stdout | trim == 'missing'
+
+    - name: 2. Abortar si no hay comando de Compose
+      ansible.builtin.fail:
+        msg: >-
+          No se encontró 'docker compose' (plugin v2), 'docker-compose' (v1)
+          ni 'podman-compose'. Instala al menos uno para levantar backend/parses.
+      when: compose_detect.stdout | trim == 'missing'
+
+    - name: 3. Exponer el socket de contenedores al grupo docker
+      block:
+        - name: 3a. Verificar que exista el socket del motor de contenedores
+          ansible.builtin.stat:
+            path: "{{ anomalia_container_socket }}"
+          register: container_sock
+        - name: 3b. Ajustar grupo y permisos del socket (acceso del usuario anomalia)
+          ansible.builtin.file:
+            path: "{{ anomalia_container_socket }}"
+            owner: root
+            group: docker
+            mode: "0660"
+          when: container_sock.stat.exists
+      when: anomalia_container_engine in ['docker', 'podman']
+
+    - name: 4. Crear red de contenedores compartida anomalia_aiops-net si no existe
+      ansible.builtin.command: "{{ anomalia_engine_cmd }} network create --driver bridge anomalia_aiops-net"
+      register: network_create
+      failed_when: network_create.rc != 0 and "already exists" not in network_create.stderr
+      changed_when: "'anomalia_aiops-net' in (network_create.stdout + network_create.stderr)"
+      run_once: true
+
+    - name: 5. Generar clave aleatoria con OpenSSL en el nodo de control
       ansible.builtin.command: openssl rand -base64 24
       register: clave_generada
       delegate_to: localhost
@@ -21,13 +61,13 @@
       changed_when: false
       no_log: true
 
-    - name: 2. Definir contraseña compartida en texto plano para los nodos y registro
+    - name: 6. Definir contraseña compartida en texto plano para los nodos y registro
       ansible.builtin.set_fact:
         clave_texto_plano: "{{ clave_generada.stdout }}"
       run_once: true
       no_log: true
 
-    - name: 3. Crear el usuario en los nodos con la contraseña en texto plano para login directo
+    - name: 7. Crear el usuario en los nodos con la contraseña en texto plano para login directo
       ansible.builtin.user:
         name: "{{ nombre_usuario }}"
         password: "{{ clave_texto_plano | password_hash('sha512') }}"
@@ -36,7 +76,7 @@
         state: present
       no_log: true
 
-    - name: 4. Otorgar permisos de sudo y acceso al demonio Docker
+    - name: 8. Otorgar permisos de sudo y acceso al socket de contenedores
       ansible.builtin.user:
         name: "{{ nombre_usuario }}"
         groups: "{{ ('sudo' if ansible_os_family == 'Debian' else 'wheel') + ',docker' }}"
@@ -50,9 +90,15 @@
     - role: vmagent
     - role: alertmanager
     - role: vmalert
+    - role: victoria_firewall
+      tags: ['firewall']
+      when: inventory_hostname in groups.get('all_nodes', [])
+    - role: certs
+      tags: ['certs', 'backend']
+      when: inventory_hostname in groups.get('backend_nodes', [])
     - role: backend
       tags: ['backend']
       when: inventory_hostname in groups.get('backend_nodes', [])
-    - role: parser
-      tags: ['parser']
-      when: inventory_hostname in groups.get('parser_nodes', [])
+    - role: parses
+      tags: ['parses']
+      when: inventory_hostname in groups.get('parses_nodes', [])
