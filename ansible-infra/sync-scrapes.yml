@@ -1,0 +1,31 @@
+---
+# Regeneración incremental de scrapes de vmagent y rutas de vmauth (spec 011 §4.3/§4.4).
+#
+# Lo ejecuta el worker vmalert (job `vmalert_regen_scrapes`) en modo dirigido
+# (-i {ip},) tras un deploy/undeploy de vmalert por tenant. No descarga binarios:
+# solo regenera configs y reinicia los servicios afectados.
+#
+# Extra-vars:
+#   infra_components    lista [{component, ip, port}] desde infrastructure_nodes
+#                       (BD = fuente de verdad, spec 005). Habilita el "modo flat"
+#                       de los templates (el inventario ad-hoc no tiene grupos).
+#   vmalert_instances   lista de instancias vmalert por tenant desplegadas.
+#   regen_components    ['vmagent'] y/o ['vmauth']: qué config regenerar.
+#   vmagent_remote_write_url / vmagent_ip / vmagent_port / vmauth_ip /
+#   vmauth_server_port  vars del modo flat para los services.
+- name: Regenerar scrape jobs de vmagent y rutas de vmauth
+  hosts: all
+  become: yes
+  vars:
+    gestionar_servicios: true
+    nombre_usuario: "anomalia"
+  tasks:
+    - name: Regenerar configuracion de vmagent
+      ansible.builtin.include_role:
+        name: vmagent
+      when: "'vmagent' in (regen_components | default([]))"
+
+    - name: Regenerar configuracion de vmauth
+      ansible.builtin.include_role:
+        name: vmauth
+      when: "'vmauth' in (regen_components | default([]))"

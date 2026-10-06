@@ -1,0 +1,29 @@
+---
+# Sincroniza las reglas vmalert de un tenant desde la BD (fuente de verdad)
+# hacia el nodo `rules_path` (spec 011/012). El worker ejecuta este playbook
+# por el job `vmalert_sync_rules`; el reload HTTP lo hace el worker después.
+- name: Sincronizar reglas vmalert de un tenant hacia el nodo
+  hosts: all
+  become: yes
+  vars:
+    nombre_usuario: "anomalia"
+    vmalert_instances: []
+
+  tasks:
+    - name: Crear directorio de reglas por tenant
+      ansible.builtin.file:
+        path: "{{ item.rules_path }}"
+        state: directory
+        owner: "{{ nombre_usuario }}"
+        group: "{{ nombre_usuario }}"
+        mode: "0755"
+      loop: "{{ vmalert_rules_files | default([]) }}"
+
+    - name: Escribir reglas del tenant desde la BD
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: "{{ nombre_usuario }}"
+        group: "{{ nombre_usuario }}"
+        mode: "0644"
+      loop: "{{ vmalert_rules_files | default([]) }}"

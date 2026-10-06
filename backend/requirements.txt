@@ -20,3 +20,4 @@ prometheus_client
 sqlalchemy
 python-multipart
 ansible
+PyYAML>=6.0

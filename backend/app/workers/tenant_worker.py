@@ -1,9 +1,12 @@
-"""Tenant worker: processes tenant_create and tenant_delete jobs."""
+"""Tenant worker: processes tenant_create, tenant_delete and parses_provision jobs."""
+import asyncio
 import logging
 import uuid
 from typing import Optional
+
 from .base import BaseWorker
 from ..database import get_db_connection
+from ..parses_provisioner import provision_user_parses
 
 logger = logging.getLogger("anomalia.workers.tenant")
 
@@ -12,13 +15,15 @@ class TenantWorker(BaseWorker):
     """Worker that handles tenant provisioning jobs."""
 
     def __init__(self, interval: int = 30):
-        super().__init__(interval, job_types=['tenant_create', 'tenant_delete'])
+        super().__init__(interval, job_types=['tenant_create', 'tenant_delete', 'parses_provision'])
 
     async def process_job(self, job_id: str, job_type: str, ref_id: int, payload: dict):
         if job_type == 'tenant_create':
             await self._process_tenant_create(job_id, ref_id, payload)
         elif job_type == 'tenant_delete':
             await self._process_tenant_delete(job_id, ref_id, payload)
+        elif job_type == 'parses_provision':
+            await self._process_parses_provision(job_id, ref_id, payload)
         else:
             raise ValueError(f"Unknown job type: {job_type}")
 
@@ -135,6 +140,46 @@ class TenantWorker(BaseWorker):
             cursor.close()
             conn.close()
 
+    async def _process_parses_provision(self, job_id: str, tenant_id: int, payload: dict):
+        """Provision Parses for every user with access to the tenant (idempotent, spec 011 §3.6)."""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            await self._update_progress(job_id, 20, "collecting_users")
+
+            cursor.execute(
+                """SELECT DISTINCT u.username
+                   FROM users u
+                   JOIN user_tenants ut ON ut.user_id = u.id
+                   WHERE ut.tenant_id = %s AND u.is_active = TRUE""",
+                (tenant_id,)
+            )
+            usernames = [r[0] for r in cursor.fetchall()]
+
+            if not usernames:
+                logger.info("parses_provision: no active users for tenant %s", tenant_id)
+                await self._update_progress(job_id, 100, "done")
+                return
+
+            await self._update_progress(job_id, 60, "provisioning_parses")
+
+            errors: list[str] = []
+            for username in usernames:
+                try:
+                    await asyncio.to_thread(provision_user_parses, username)
+                except Exception as e:
+                    logger.error("parses_provision failed for user %s (tenant %s): %s", username, tenant_id, e)
+                    errors.append(f"{username}: {e}")
+
+            if errors:
+                raise RuntimeError(f"parses_provision partial failure: {'; '.join(errors)[:200]}")
+
+            await self._update_progress(job_id, 100, "done")
+
+        finally:
+            cursor.close()
+            conn.close()
+
     async def _seed_tenant_datasources(self, cursor, tenant_id: int, t_type: str, account_id: int, project_id: int):
         """Seed tenant_datasources based on infrastructure select nodes."""
         cursor.execute(
@@ -187,13 +232,13 @@ class TenantWorker(BaseWorker):
         row = cursor.fetchone()
         return row[0] if row else None
 
-    async def _enqueue_job(self, cursor, job_type: str, ref_id: int, payload: dict = None):
+    async def _enqueue_job(self, cursor, job_type: str, ref_id: int):
         """Enqueue a new job in job_state."""
         job_id = str(uuid.uuid4())
         cursor.execute(
-            """INSERT INTO job_state (id, type, ref_id, status, phase, progress_pct, payload, created_by)
-               VALUES (%s, %s, %s, 'queued', 'init', 0, %s, NULL)""",
-            (job_id, job_type, ref_id, payload or {})
+            """INSERT INTO job_state (id, type, ref_id, status, phase, progress_pct, created_by)
+               VALUES (%s, %s, %s, 'queued', 'init', 0, NULL)""",
+            (job_id, job_type, ref_id)
         )
 
     async def _update_progress(self, job_id: str, progress: int, phase: str):

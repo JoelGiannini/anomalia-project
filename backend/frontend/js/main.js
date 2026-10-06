@@ -282,7 +282,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         // se recrean en cada renderAlertsConfig().
         if (e.target.closest('.btn-vmalert-rules')) {
             const btn = e.target.closest('.btn-vmalert-rules');
-            admin.openVmalertRulesModal(btn.getAttribute('data-tenant-id'), btn.getAttribute('data-tenant-slug'));
+            admin.openVmalertRulesModal(
+                btn.getAttribute('data-tenant-id'),
+                btn.getAttribute('data-tenant-slug'),
+                btn.getAttribute('data-tenant-internal') === '1'
+            );
         }
         if (e.target.closest('.btn-vmalert-reload')) {
             const btn = e.target.closest('.btn-vmalert-reload');
@@ -291,7 +295,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         // Admin Alerts (conf) versions - same logic but different class names
         if (e.target.closest('.btn-vmalert-rules-admin')) {
             const btn = e.target.closest('.btn-vmalert-rules-admin');
-            admin.openVmalertRulesModal(btn.getAttribute('data-tenant-id'), btn.getAttribute('data-tenant-slug'));
+            admin.openVmalertRulesModal(
+                btn.getAttribute('data-tenant-id'),
+                btn.getAttribute('data-tenant-slug'),
+                btn.getAttribute('data-tenant-internal') === '1'
+            );
         }
         if (e.target.closest('.btn-vmalert-reload-admin')) {
             const btn = e.target.closest('.btn-vmalert-reload-admin');

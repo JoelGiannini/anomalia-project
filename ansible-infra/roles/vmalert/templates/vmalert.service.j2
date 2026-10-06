@@ -3,7 +3,11 @@ Description=vmalert (Anomalia){{ " - " + item.tenant_slug if item is defined els
 
 [Service]
 User=root
-ExecStart=/usr/local/bin/vmalert   --datasource.url=http://{{ hostvars[groups['vm_select_nodes'][0]].ansible_host | default('127.0.0.1') }}:{{ hostvars[groups['vm_select_nodes'][0]].vmselect_port | default('8401') }}   --remoteRead.url=http://{{ hostvars[groups['vm_select_nodes'][0]].ansible_host | default('127.0.0.1') }}:{{ hostvars[groups['vm_select_nodes'][0]].vmselect_port | default('8401') }}   --remoteWrite.url=http://{{ hostvars[groups['vm_insert_nodes'][0]].ansible_host | default('127.0.0.1') }}:{{ hostvars[groups['vm_insert_nodes'][0]].vminsert_port | default('8400') }}   -notifier.url=http://{{ hostvars[groups['alertmanager_nodes'][0]].ansible_host | default('127.0.0.1') }}:{{ hostvars[groups['alertmanager_nodes'][0]].alertmanager_port | default('9093') }}   -rule={{ item.rules_path + '/alert_rules.yml' if item is defined else '/etc/anomalia/vmalert/alert_rules.yml' }}   --httpListenAddr=:{{ item.port if item is defined else '8880' }}   -evaluationInterval=15s
+{% if item is defined %}
+ExecStart=/usr/local/bin/vmalert --datasource.url={{ item.datasource_url }} --remoteRead.url={{ item.datasource_url }} --remoteWrite.url={{ item.remote_write_url }} -notifier.url={{ item.alertmanager_url }} -rule={{ item.rules_path + '/alert_rules.yml' }} --httpListenAddr=:{{ item.port }} -evaluationInterval={{ item.evaluation_interval | default('15s') }}
+{% else %}
+ExecStart=/usr/local/bin/vmalert --datasource.url=http://{{ hostvars[groups['vm_select_nodes'][0]].ansible_host | default('127.0.0.1') }}:{{ hostvars[groups['vm_select_nodes'][0]].vmselect_port | default('8401') }} --remoteRead.url=http://{{ hostvars[groups['vm_select_nodes'][0]].ansible_host | default('127.0.0.1') }}:{{ hostvars[groups['vm_select_nodes'][0]].vmselect_port | default('8401') }} --remoteWrite.url=http://{{ hostvars[groups['vm_insert_nodes'][0]].ansible_host | default('127.0.0.1') }}:{{ hostvars[groups['vm_insert_nodes'][0]].vminsert_port | default('8400') }} -notifier.url=http://{{ hostvars[groups['alertmanager_nodes'][0]].ansible_host | default('127.0.0.1') }}:{{ hostvars[groups['alertmanager_nodes'][0]].alertmanager_port | default('9093') }} -rule=/etc/anomalia/vmalert/alert_rules.yml --httpListenAddr=:8880 -evaluationInterval=15s
+{% endif %}
 Restart=always
 
 [Install]

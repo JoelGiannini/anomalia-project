@@ -214,7 +214,7 @@ export const admin = {
                     opt.textContent = `${n.hostname} (${n.service_ip || n.ip_address}:${n.port}) - ${n.available_slots}/${n.capacity_slots} slots`;
                     if (n.available_slots <= 0) opt.disabled = true;
                     nodeSelect.appendChild(opt);
-                }
+                });
             }
         } catch (e) {
             console.error('Error cargando nodos vmalert:', e);
@@ -410,17 +410,32 @@ export const admin = {
 
     // --- Editor de reglas vmalert por tenant (specs/011 F5) ---
 
-    async openVmalertRulesModal(id, slug) {
+    async openVmalertRulesModal(id, slug, isInternal) {
         const tenantId = document.getElementById('vmalert-rules-tenant-id');
         const area = document.getElementById('vmalert-rules-yaml');
         const status = document.getElementById('vmalert-rules-status');
+        const saveBtn = document.getElementById('btn-vmalert-rules-save');
+        const reloadBtn = document.getElementById('btn-vmalert-rules-reload');
+        const badge = document.getElementById('vmalert-rules-internal-badge');
         if (!tenantId || !area) return;
 
         tenantId.value = id;
         document.getElementById('vmalert-rules-tenant').textContent = slug || id;
         document.getElementById('vmalert-rules-path').textContent =
-            `/opt/anomalia/vmalert-rules/${slug}/alert_rules.yml`;
-        status.textContent = 'Cargando reglas...';
+            `/etc/anomalia/vmalert/${slug}/alert_rules.yml`;
+
+        // spec 011 §4.7: los tenants de control interno exponen las reglas en
+        // solo-lectura; la API además rechaza el PUT (409). Al abre un tenant
+        // regular se restauran los controles por si el modal se reutiliza.
+        area.readOnly = !!isInternal;
+        saveBtn.disabled = !!isInternal;
+        reloadBtn.disabled = !!isInternal;
+        badge.classList.toggle('hidden', !isInternal);
+        badge.classList.toggle('flex', !!isInternal);
+
+        status.textContent = isInternal
+            ? 'Tenant de control interno: las reglas son canónicas (internal_rules) e inmutables por API.'
+            : 'Cargando reglas...';
         area.value = '';
         ui.toggleModal('modal-vmalert-rules', true);
 
@@ -451,11 +466,11 @@ export const admin = {
         messagesContainer.innerHTML = '';
         
         // Add welcome message
-        this.addAIMessage(messagesContainer, 
+        this.addAIMessage(messagesContainer,
             '¡Hola! Soy tu asistente para reglas vmalert/PromQL. '
-            'Puedo ayudarte con sintaxis PromQL, funciones de agregación, '
-            'expresiones de alerta, labels/annotations, y buenas prácticas. '
-            '¿En qué te ayudo?');
+            + 'Puedo ayudarte con sintaxis PromQL, funciones de agregación, '
+            + 'expresiones de alerta, labels/annotations, y buenas prácticas. '
+            + '¿En qué te ayudo?');
 
         const sendMessage = async () => {
             const text = input.value.trim();
@@ -534,21 +549,22 @@ export const admin = {
             : document.getElementById('btn-vmalert-rules-save');
         const original = btn.textContent;
         btn.disabled = true;
-        btn.textContent = 'Guardando...';
-        status.textContent = 'Guardando reglas...';
 
         try {
+            btn.textContent = 'Guardando...';
+            status.textContent = 'Guardando reglas...';
             await api.saveTenantVmalertRules(id, area.value);
-            status.textContent = 'Reglas guardadas en el nodo.';
+            status.textContent = 'Reglas guardadas en la base de datos.';
+
             if (!andReload) return;
 
-            status.textContent = 'Reglas guardadas. Solicitando reload de vmalert...';
-            const job = await this.runVmalertReload(id, (j) => {
-                status.textContent = `Reload en curso · fase ${j.phase || '-'} · ${j.progress_pct || 0}%`;
+            status.textContent = 'Aplicando reglas en el nodo vmalert...';
+            const job = await this.runVmalertSync(id, (j) => {
+                status.textContent = `Sincronización en curso · fase ${j.phase || '-'} · ${j.progress_pct || 0}%`;
             });
             status.textContent = job.status === 'succeeded'
-                ? 'Reload completado.'
-                : `Reload finalizado con estado '${job.status}'` +
+                ? 'Reglas aplicadas y vmalert recargado.'
+                : `Sincronización finalizada con estado '${job.status}'` +
                   (job.error_code ? ` (${job.error_code})` : '') + ".";
         } catch (err) {
             console.error(err);
@@ -557,6 +573,16 @@ export const admin = {
             btn.disabled = false;
             btn.textContent = original;
         }
+    },
+
+    // Materializa las reglas guardadas en la BD hacia el nodo y recarga vmalert
+    // (job vmalert_sync_rules, specs 011/012).
+    async runVmalertSync(tenantId, onProgress) {
+        const accepted = await api.tenantVmalertAction(tenantId, 'sync_rules');
+        const jobId = accepted.job_id;
+        if (!jobId) throw new Error('El backend no devolvió un job_id para la sincronización.');
+        state.trackJob(jobId, 'vmalert_sync_rules');
+        return pollJob(jobId, onProgress);
     },
 
     // Recarga de vmalert por polling del job (specs/011 §5.3). Lo comparten el

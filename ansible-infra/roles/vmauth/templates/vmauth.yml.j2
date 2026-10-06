@@ -9,33 +9,69 @@ unauthorized_user:
         - "^/profiling/.*"
       headers: ["X-Scope-OrgID: PROFILES"]
       url_prefix:
+{% if infra_components is defined %}
+{% set pyroscope_up = infra_components | selectattr('component', 'equalto', 'pyroscope') | list %}
+{% if pyroscope_up %}{% for node in pyroscope_up %}
+        - "http://{{ node.ip }}:{{ node.port }}/"
+{% endfor %}{% else %}
+        - "http://127.0.0.1:4040/"
+{% endif %}
+{% else %}
         {% for host in groups['pyroscope_nodes'] | default(groups['vm_insert_nodes']) %}
         - "http://{{ hostvars[host].pyroscope_ip | default(hostvars[host].ansible_host) | default('172.17.0.1') }}:{{ hostvars[host].pyroscope_port | default('4040') }}/"
       {% endfor %}
+{% endif %}
 
     # Métricas - VictoriaMetrics (vminsert)
     - src_paths: ["/insert/.*"]
       src_query_args: ["tenant=METRICS"]
       headers: ["AccountID: 0", "ProjectID: 0"]
       url_prefix:
+{% if infra_components is defined %}
+{% set vminsert_up = infra_components | selectattr('component', 'equalto', 'vminsert') | list %}
+{% if vminsert_up %}{% for node in vminsert_up %}
+        - "http://{{ node.ip }}:{{ node.port }}/"
+{% endfor %}{% else %}
+        - "http://127.0.0.1:8400/"
+{% endif %}
+{% else %}
         {% for host in groups['vm_insert_nodes'] %}
         - "http://{{ hostvars[host].vminsert_ip | default(hostvars[host].ansible_host) | default('127.0.0.1') }}:{{ hostvars[host].vminsert_port | default('8400') }}/"
         {% endfor %}
+{% endif %}
 
     # Trazas distribuidas OTLP - VictoriaTraces (vtinsert)
     - src_paths: ["/insert.*"]
       src_query_args: ["tenant=TRACES"]
       headers: ["AccountID: 0", "ProjectID: 1"]
       url_prefix:
+{% if infra_components is defined %}
+{% set vtinsert_up = infra_components | selectattr('component', 'equalto', 'vtinsert') | list %}
+{% if vtinsert_up %}{% for node in vtinsert_up %}
+        - "http://{{ node.ip }}:{{ node.port }}/"
+{% endfor %}{% else %}
+        - "http://127.0.0.1:8490/"
+{% endif %}
+{% else %}
         {% for host in groups['vt_insert_nodes'] | default(groups['vm_insert_nodes']) %}
         - "http://{{ hostvars[host].vtinsert_ip | default(hostvars[host].ansible_host) | default('127.0.0.1') }}:{{ hostvars[host].vtinsert_port | default('8490') }}/"
         {% endfor %}
+{% endif %}
 
     # Logs de Auditoría - VictoriaLogs (vlinsert)
     - src_paths: ["/insert.*"]
       src_query_args: ["tenant=AUDIT_LOGS"]
       headers: ["AccountID: 0", "ProjectID: 3"]
       url_prefix:
+{% if infra_components is defined %}
+{% set vlinsert_up = infra_components | selectattr('component', 'equalto', 'vlinsert') | list %}
+{% if vlinsert_up %}{% for node in vlinsert_up %}
+        - "http://{{ node.ip }}:{{ node.port }}/"
+{% endfor %}{% else %}
+        - "http://127.0.0.1:8480/"
+{% endif %}
+{% else %}
         {% for host in groups['vlogs_insert_nodes'] | default(groups['vm_insert_nodes']) %}
         - "http://{{ hostvars[host].vlinsert_ip | default(hostvars[host].ansible_host) | default('127.0.0.1') }}:{{ hostvars[host].vlinsert_port | default('8480') }}/"
         {% endfor %}
+{% endif %}

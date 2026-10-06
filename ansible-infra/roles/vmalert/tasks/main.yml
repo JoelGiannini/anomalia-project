@@ -10,8 +10,22 @@
         group: "{{ nombre_usuario }}"
         mode: "0755"
       loop: "{{ vmalert_instances }}"
+      when: (vmalert_state | default('present')) == 'present'
 
-    - name: Copiar reglas por tenant
+    - name: Copiar archivos de reglas provisionados (desde la BD)
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: "{{ nombre_usuario }}"
+        group: "{{ nombre_usuario }}"
+        mode: "0644"
+      loop: "{{ vmalert_rules_files | default([]) }}"
+      when:
+        - (vmalert_state | default('present')) == 'present'
+        - vmalert_rules_files is defined
+        - vmalert_rules_files | length > 0
+
+    - name: Copiar reglas por tenant (plantilla por defecto)
       ansible.builtin.template:
         src: alert_rules.yml.j2
         dest: "{{ item.rules_path }}/alert_rules.yml"
@@ -19,6 +33,9 @@
         group: "{{ nombre_usuario }}"
         mode: "0644"
       loop: "{{ vmalert_instances }}"
+      when:
+        - (vmalert_state | default('present')) == 'present'
+        - not (vmalert_rules_files is defined and vmalert_rules_files | length > 0)
 
     - name: Crear unidades systemd por tenant
       ansible.builtin.template:
@@ -26,6 +43,7 @@
         dest: "/etc/systemd/system/anomalia-vmalert-{{ item.tenant_slug }}.service"
         mode: "0644"
       loop: "{{ vmalert_instances }}"
+      when: (vmalert_state | default('present')) == 'present'
 
     - name: Habilitar y arrancar instancias por tenant
       ansible.builtin.systemd:
@@ -34,6 +52,28 @@
         enabled: yes
         daemon_reload: yes
       loop: "{{ vmalert_instances }}"
+      when: (vmalert_state | default('present')) == 'present'
+
+    - name: Detener y deshabilitar instancias por tenant (state=absent)
+      ansible.builtin.systemd:
+        name: "anomalia-vmalert-{{ item.tenant_slug }}.service"
+        state: stopped
+        enabled: no
+        daemon_reload: yes
+      loop: "{{ vmalert_instances }}"
+      when: (vmalert_state | default('present')) == 'absent'
+      register: vmalert_stop_result
+      failed_when: >
+        vmalert_stop_result.failed and
+        ('could not be found' not in (vmalert_stop_result.msg | default(''))) and
+        ('does not exist' not in (vmalert_stop_result.msg | default('')))
+
+    - name: Eliminar unidades systemd por tenant (state=absent)
+      ansible.builtin.file:
+        path: "/etc/systemd/system/anomalia-vmalert-{{ item.tenant_slug }}.service"
+        state: absent
+      loop: "{{ vmalert_instances }}"
+      when: (vmalert_state | default('present')) == 'absent'
 
 - name: Modo single (retrocompatible)
   when: not (vmalert_instances is defined and vmalert_instances|length > 0)

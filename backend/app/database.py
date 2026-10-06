@@ -95,6 +95,7 @@ def init_db(hash_password_func):
                 status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('provisioning','active','deleting','error','deleted_cleanup')),
                 org_id_upper VARCHAR(100) UNIQUE,
                 is_audit BOOLEAN DEFAULT FALSE,
+                is_internal BOOLEAN DEFAULT FALSE,
                 deleted_at TIMESTAMP,
                 deletion_confirmed_at TIMESTAMP,
                 deletion_confirmed_by INTEGER,
@@ -149,6 +150,7 @@ def init_db(hash_password_func):
                 service VARCHAR(20) DEFAULT 'vmalert',
                 unit_name VARCHAR(150) NOT NULL,
                 rules_path VARCHAR(255) NOT NULL,
+                rules_yaml TEXT,
                 status VARCHAR(20) DEFAULT 'deployed' CHECK (status IN ('creating','deploying','deployed','error','stopped','undeployed')),
                 health VARCHAR(10) DEFAULT 'unknown' CHECK (health IN ('ok','degraded','down','unknown')),
                 last_deployed_at TIMESTAMP,
@@ -158,6 +160,17 @@ def init_db(hash_password_func):
                 CONSTRAINT uq_tvi_instance_port UNIQUE (instance_id, port)
             );
         """)
+
+        # Migración idempotente para BD preexistentes (spec 011/012): la regla de
+        # alerta por tenant vive en la BD como fuente de verdad (rules_yaml).
+        cursor.execute(
+            "ALTER TABLE tenant_vmalert_instances ADD COLUMN IF NOT EXISTS rules_yaml TEXT"
+        )
+        # spec 011 §4.7: tenants de control interno (METRICS/TRACES/PROFILES/AUDIT_LOGS)
+        # con reglas canónicas inmutables por API.
+        cursor.execute(
+            "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS is_internal BOOLEAN DEFAULT FALSE"
+        )
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS port_mapping (
@@ -365,11 +378,11 @@ def init_db(hash_password_func):
         cursor.execute("SELECT COUNT(*) FROM tenants;")
         if cursor.fetchone()[0] == 0:
             cursor.execute("""
-                INSERT INTO tenants (name, type, account_id, project_id, environment, port, description) VALUES 
-                ('METRICS', 'metrics', 0, 0, 'default', 8400, 'Tenant para métricas de infraestructura (VictoriaMetrics - vminsert)'),
-                ('TRACES', 'traces', 0, 1, 'default', 8490, 'Tenant para trazas distribuidas OTLP (VictoriaTraces - vtinsert)'),
-                ('PROFILES', 'profiles', 0, 2, 'default', 4040, 'Tenant de perfilado continuo vía Pyroscope'),
-                ('AUDIT_LOGS', 'logs', 0, 3, 'default', 8480, 'Tenant para logs de auditoría (VictoriaLogs - vlinsert)')
+                INSERT INTO tenants (name, type, account_id, project_id, environment, port, description, has_alerts, is_internal, placement_mode) VALUES 
+                ('METRICS', 'metrics', 0, 0, 'default', 8400, 'Tenant para métricas de infraestructura (VictoriaMetrics - vminsert)', TRUE, TRUE, 'auto'),
+                ('TRACES', 'traces', 0, 1, 'default', 8490, 'Tenant para trazas distribuidas OTLP (VictoriaTraces - vtinsert)', TRUE, TRUE, 'auto'),
+                ('PROFILES', 'profiles', 0, 2, 'default', 4040, 'Tenant de perfilado continuo vía Pyroscope', TRUE, TRUE, 'auto'),
+                ('AUDIT_LOGS', 'logs', 0, 3, 'default', 8480, 'Tenant para logs de auditoría (VictoriaLogs - vlinsert)', TRUE, TRUE, 'auto')
                 ON CONFLICT (name) DO NOTHING;
             """)
 

@@ -2,6 +2,44 @@ global:
   scrape_interval: 15s
 
 scrape_configs:
+{% if infra_components is defined %}
+{# ---------------------------------------------------------------------- #
+   Modo dirigido (worker): la BD es la fuente de verdad (spec 005) y el
+   inventario ad-hoc (-i {ip},) no expone grupos/hostvars. Los targets base
+   se construyen a partir de la extra-var infra_components
+   ([{component, ip, port}]) y los jobs por-tenant desde vmalert_instances
+   (spec 011 §4.3). El mapeo componente -> job_name replica el modo
+   inventario para que ambos modos produzcan la misma config.            #}
+{% set jobmap = {
+  'vmstorage':    'vm-storage',
+  'vminsert':     'vm-insert',
+  'vmselect':     'vm-select',
+  'vlstorage':    'vlogs-storage',
+  'vlinsert':     'vlogs-insert',
+  'vlselect':     'vlogs-select',
+  'vtstorage':    'vt-storage',
+  'vtinsert':     'vt-insert',
+  'vtselect':     'vt-select',
+  'pyroscope':    'pyroscope',
+  'vmauth':       'vmauth',
+  'vmagent':      'vmagent',
+  'alertmanager': 'alertmanager',
+  'vmalert':      'vmalert',
+  'backend':      'anomalia-backend',
+  'parses':       'parses-service',
+} %}
+{% for comp, job_name in jobmap.items() %}
+{% if infra_components | selectattr('component', 'equalto', comp) | list | length > 0 %}
+  - job_name: '{{ job_name }}'
+    scheme: http
+    static_configs:
+      - targets:
+{% for node in infra_components | selectattr('component', 'equalto', comp) | list %}
+          - '{{ node.ip }}:{{ node.port }}'
+{% endfor %}
+{% endif %}
+{% endfor %}
+{% else %}
 {% if groups.get('vm_storage_nodes', []) | length > 0 %}
   - job_name: 'vm-storage'
     scheme: http
@@ -146,13 +184,14 @@ scrape_configs:
           - '{{ hostvars[host].parses_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].parses_port | default(8090) }}'
 {% endfor %}
 {% endif %}
+{% endif %}
 {% if vmalert_instances is defined and vmalert_instances | length > 0 %}{% for vi in vmalert_instances %}
   - job_name: 'vmalert-{{ vi.tenant_slug | default("tenant") }}'
     scrape_interval: 30s
     scheme: http
     static_configs:
       - targets:
-          - '{{ vi.node_ip | default(hostvars[groups.get("vmalert_nodes", ["127.0.0.1"])[0]].ansible_host | default("127.0.0.1")) }}:{{ vi.port | default(8880) }}'
+          - '{{ vi.node_ip | default("127.0.0.1") }}:{{ vi.port | default(8880) }}'
     relabel_configs:
       - target_label: component
         replacement: vmalert

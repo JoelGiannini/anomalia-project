@@ -1437,6 +1437,13 @@ async def proxy_ui(
                 return _parses_not_found()
             upstream_content = isolated
         upstream_content = _rewrite_parses_content(ticket, upstream_content, media_type)
+    elif admin_console:
+        # Consolas de administracion montadas en la raiz (vmalert del tenant y
+        # Alertmanager global): se sirven tal cual. Sus assets son relativos y
+        # resuelven bajo /ui/{ticket}/, sin scoping de Victoria, asi que no hay
+        # rewrite de contenido (y tampoco existe `ds` para ellas: intentarlo
+        # lanzaba UnboundLocalError -> 500, specs/011 5.7).
+        pass
     else:
         if path == ADMIN_TENANTS_PATH:
             upstream_content = _filter_admin_tenants(upstream_content, ds)

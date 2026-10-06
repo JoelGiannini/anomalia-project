@@ -12,7 +12,7 @@ Alcance: Alta/gestión de tenants con ciclo de vida completo: slug automático �
 - X-Scope-OrgID = slug normalizado UPPER, sin espacios, sin caracteres especiales (solo A-Z0-9_-). 
 - account_id/project_id únicos entre activos; reutilizables tras hard-delete+limpieza (solo cuando no existan referencias activas). 
 - Puertos dinámicos + mapeo (host_port único por nodo/host). 
-- Reglas YAML: /opt/anomalia/vmalert-rules/<tenant_slug>/alert_rules.yml (o estructura por slug). 
+- Reglas YAML: BD (`tenant_vmalert_instances.rules_yaml`) como fuente de verdad; materializadas en el nodo en `/etc/anomalia/vmalert/<tenant_slug>/alert_rules.yml` (rules_path). 
 - Reload: HTTP /-/reload por instancia vmalert. 
 - Aislamiento tenant→instancia: validación estricta. Prohibido cross-tenant. 
 - Alertmanager UI global vía ticket (scope alertmanager_global): requiere perfil alerts_manager (administración). TTL corto, audit, rate-limit. 
@@ -33,6 +33,7 @@ Ver §2b para detalle completo. Principios aplicados: slug inmutable, 1:1 vmaler
 - vmalert_node_id INTEGER REFERENCES infrastructure_nodes(id) ON DELETE SET NULL (seleccionado manual/auto)
 - vmalert_port INTEGER
 - has_alerts BOOLEAN DEFAULT FALSE
+- is_internal BOOLEAN DEFAULT FALSE (spec §4.9: tenants de control interno; reglas canónicas inmutables y vmalert always-on)
 - placement_mode VARCHAR(10) DEFAULT 'manual' CHECK (placement_mode IN ('manual','auto'))
 - status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('provisioning','active','deleting','error','deleted_cleanup'))
 - org_id_upper VARCHAR(100) UNIQUE (derivado de slug UPPER, sin espacios/caracteres especiales)
@@ -54,6 +55,7 @@ Ver §2b para detalle completo. Principios aplicados: slug inmutable, 1:1 vmaler
 - service VARCHAR(20) DEFAULT 'vmalert'
 - unit_name VARCHAR(150) NOT NULL
 - rules_path VARCHAR(255) NOT NULL
+- rules_yaml TEXT (fuente de verdad de las reglas; NULL hasta primer guardado)
 - status VARCHAR(20) DEFAULT 'deployed' CHECK (status IN ('creating','deploying','deployed','error','stopped','undeployed'))
 - health VARCHAR(10) DEFAULT 'unknown' CHECK (health IN ('ok','degraded','down','unknown'))
 - last_deployed_at TIMESTAMP
@@ -63,7 +65,7 @@ UNIQUE (instance_id, port)
 
 ### 2b.4 job_state (persistente Postgres)
 - id VARCHAR(36) PRIMARY KEY (UUID recomendado)
-- type VARCHAR(30) (tenant_create, tenant_delete, vmalert_deploy, vmalert_undeploy, vmalert_reload, parses_provision)
+- type VARCHAR(30) (tenant_create, tenant_delete, vmalert_deploy, vmalert_undeploy, vmalert_reload, vmalert_sync_rules, vmalert_regen_scrapes, parses_provision)
 - ref_id INTEGER
 - status VARCHAR(12) DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','failed','cancelled'))
 - phase VARCHAR(30)
@@ -123,9 +125,10 @@ UNIQUE (instance_id, host_port)
 ### 3.3 Reglas vmalert por tenant
 | Método | Ruta | Auth/Profile | Descripción |
 |---|---|---|---|
-| GET | /api/v1/admin/tenants/{tenant_id}/vmalert/rules | alerts_manager | Lee /opt/anomalia/vmalert-rules/<tenant_slug>/alert_rules.yml. Valida tenant→instancia. |
-| PUT | /api/v1/admin/tenants/{tenant_id}/vmalert/rules | alerts_manager | Guarda YAML (validación sintáctica básica). Actualiza checksum. No ejecuta reload automático. |
-| POST | /api/v1/admin/tenants/{tenant_id}/vmalert/reload | alerts_manager | Fuerza reload HTTP /-/reload en instancia vmalert del tenant (tenant→instancia). Async (job vmalert_reload) o directo con resultado. Retorna 202 + job_id si async. |
+| GET | /api/v1/admin/tenants/{tenant_id}/vmalert/rules | alerts_manager | Lee `rules_yaml` desde `tenant_vmalert_instances` (BD = fuente de verdad). Valida tenant→instancia (409 si inexistente). |
+| PUT | /api/v1/admin/tenants/{tenant_id}/vmalert/rules | alerts_manager | Guarda YAML en BD (`rules_yaml`) con validación sintáctica PyYAML (400 si inválido). No ejecuta reload automático. 409 si el tenant no tiene instancia. **409 si `is_internal=true`** (§4.9): reglas de control interno no modificables por API. |
+| POST | /api/v1/admin/tenants/{tenant_id}/vmalert/reload | alerts_manager | Fuerza reload HTTP `/-/reload` en instancia vmalert del tenant (tenant→instancia). Async (job `vmalert_reload`). Retorna 202 + job_id. |
+| POST | /api/v1/admin/tenants/{tenant_id}/vmalert/sync_rules | alerts_manager | Encola job `vmalert_sync_rules`: materializa `rules_yaml` (BD) en `rules_path` del nodo y recarga vmalert (`/-/reload`). Retorna 202 + job_id. 422/409 si el tenant no tiene reglas o instancia. |
 
 ### 3.4 Tickets UI (proxy)
 | Método | Ruta | Auth | Descripción |
@@ -160,7 +163,7 @@ Notas: operaciones largas → 202 Accepted + job_id + GET /api/v1/admin/jobs/{jo
 
 ### 4.2 Modo por-tenant: vmalert (1:1)
 - Unidad systemd por instancia: `anomalia-vmalert-<tenant_slug>.service` (unit_name persistido en DB).
-- Reglas por tenant: `/opt/anomalia/vmalert-rules/<tenant_slug>/alert_rules.yml` (rules_path). Directorio creado con permisos correctos.
+- Reglas por tenant: BD `rules_yaml` como fuente de verdad → materializadas en `/etc/anomalia/vmalert/<tenant_slug>/alert_rules.yml` (rules_path) por el deploy o por el job `sync_rules`. Copia vía `ansible.builtin.copy` con `src` (archivo temporal provisto por el worker vía `vmalert_rules_files`), nunca `content`, para no evaluar Jinja sobre PromQL `{{ }}`. Directorio creado con permisos correctos.
 - Puerto dinámico: `--httpListenAddr=:<port>` (host_port desde port_mapping, único por instancia/nodo).
 - Targets Victoria/Alertmanager: parametrizados desde inventario dinámico o estático. `-evaluationInterval` configurable.
 - Templates: `vmalert.service.j2` debe soportar iteración por `item` (instancia) en modo por-tenant; mantener ruta single cuando no iterando.
@@ -168,16 +171,17 @@ Notas: operaciones largas → 202 Accepted + job_id + GET /api/v1/admin/jobs/{jo
 - Idempotente: solo recrea si cambia checksum config/unidad.
 
 ### 4.3 vmagent (scrapes iterativos)
-- Añadir scrapes por instancias vmalert **activas** (`tenant_vmalert_instances.status='deployed'`, `enabled=true`, tenant activo).
+- Añadir scrapes por instancias vmalert **activas** (`tenant_vmalert_instances.status='deployed'`, tenant activo).
 - Job: `job_name: vmalert-<tenant_slug>` con `targets: ["<node_ip>:<port>"]`.
 - Relabels: `tenant_id`, `tenant_slug`, `instance_id`, `org_id_upper`, `component="vmalert"`, `service="vmalert"`.
-- Config regenerada ante alta/baja/reasignación de instancia. Reload vmagent tras cambios.
-- Template iterativo sobre `vmalert_instances` cuando presente.
+- **Regen incremental (job `vmalert_regen_scrapes`)**: se encola automáticamente al terminar `vmalert_deploy`/`vmalert_undeploy` y regenera la config completa de vmagent (scrapes base + por-tenant) y vmauth sobre sus nodos vía playbook `sync-scrapes.yml` (no descarga binarios). Refleja el conjunto completo de instancias, no solo el tenant disparador; no re-encola nada (la cadena termina). Idempotente.
+- **Modo flat (dirigido)**: el worker inyecta `infra_components` (BD como fuente de verdad, spec 005) y `vmalert_instances` como extra-vars; `vmagent.yaml.j2`/`vmauth.yml.j2` renderizan desde esos datos cuando `infra_components` está definido (el inventario ad-hoc `-i {ip},` no expone grupos/hostvars). El `vmagent.service.j2` recibe `vmagent_remote_write_url` por extra-var en ese modo. El modo inventario queda intacto y produce la misma config.
+- Template iterativo sobre `vmalert_instances` cuando presente (ambos modos).
 
 ### 4.4 vmauth (regen con org_id_upper)
 - Mapeos por tenant activo incluyen **X-Scope-OrgID = org_id_upper** (derivado slug UPPER sin caracteres especiales) para Pyroscope y coherente con scoping.
-- Regenerar `vmauth.yml.j2` + reload ante alta/baja tenant activo. No romper mapeos existentes.
-- Mantener dual-awareness (si `tenants_active` pasado vía extra-vars).
+- Regenerar `vmauth.yml.j2` + reload ante alta/baja tenant activo (mismo job `vmalert_regen_scrapes` del §4.3; `infra_components` inyecta vminsert/vtinsert/vlinsert/pyroscope en modo flat). No romper mapeos existentes.
+- Mantener dual-awareness (si `tenants_active` pasado vía extra-vars; el regen flat usa `infra_components`).
 
 ### 4.5 Puertos dinámicos + mapeo (port_mapping)
 - Rango reservado `vmalert_port_range_start/end` configurable (defaults razonables). 
@@ -190,10 +194,20 @@ Notas: operaciones largas → 202 Accepted + job_id + GET /api/v1/admin/jobs/{jo
 - Respuesta 202 + job_id. Polling GET /api/v1/admin/jobs/{job_id}. Capturar stdout/stderr en job_state.logs_ref/result.
 
 ### 4.7 Hard-delete cleanup (deleted_cleanup)
-- Al completar hard-delete (confirm2 job tenant_delete): detener/deshabilitar unidad `anomalia-vmalert-<slug>.service`, borrar directorio `/opt/anomalia/vmalert-rules/<tenant_slug>/` (YAML) (P4-A: borrar en deleted_cleanup), liberar host_port en `port_mapping`, actualizar `tenants_count_active` por nodo, quitar scrape vmagent, regenerar vmauth, actualizar `tenant_vmalert_instances`/estado, marcar tenant `deleted_cleanup` (o purgado) tras verificación referencias activas. Reutilización IDs tras limpieza.
+- Al completar hard-delete (confirm2 job tenant_delete): detener/deshabilitar unidad `anomalia-vmalert-<slug>.service`, borrar directorio `/etc/anomalia/vmalert/<tenant_slug>/` (YAML) (P4-A: borrar en deleted_cleanup), liberar host_port en `port_mapping`, actualizar `tenants_count_active` por nodo, quitar scrape vmagent, regenerar vmauth, actualizar `tenant_vmalert_instances`/estado, marcar tenant `deleted_cleanup` (o purgado) tras verificación referencias activas. Reutilización IDs tras limpieza.
 
 ### 4.8 Retrocompatibilidad (modo single)
 - Si `vmalert_per_tenant=false` o `vmalert_instances` vacío: roles mantienen rutas actuales (`/etc/anomalia/vmalert/alert_rules.yml`, `anomalia-vmalert.service` único). No tocan unidades existentes. Templates con condicionales `when: vmalert_instances is defined and vmalert_instances|length>0`.
+
+### 4.9 Tenants de control interno (reglas canónicas inmutables)
+- **Motivación:** los tenants default (METRICS, TRACES, PROFILES, AUDIT_LOGS) son el control interno de la app: cualquier fallo crítico en la infraestructura debe disparar alerta a Alertmanager. Su monitoreo no puede depender de edición manual.
+- **Flag `is_internal=true`:** seed de `init.sql.j2` (y backfill `database.py`) fuerza `has_alerts=true`, `is_internal=true`, `placement_mode='auto'` en cada deploy (ON CONFLICT UPDATE). No es editable por la API (no está en `TenantPayload`).
+- **Reglas canónicas en código (SSOT):** `backend/app/internal_rules/<slug>.yaml` (metrics=stack VictoriaMetrics+app, traces=VictoriaTraces, profiles=Pyroscope, audit-logs=VictoriaLogs). Deben ser archivos estáticos copiados **verbatim** (fuera de `roles/*/templates`, sin `template:` ni Jinja) para que las anotaciones `{{ $labels.* }}` lleguen intactas a vmalert; se validan con `yaml.safe_load` en el import (`internal_rules.py`).
+- **Deploy canónico:** en `solo_deploy_vmalert`, si `is_internal=true` la instancia recibe **siempre** `INTERNAL_RULES[slug]` (pisa en cada deploy, incluso redeploy) y se persiste en `rules_yaml`. El único origen admisible es el código → inmutable por construcción.
+- **Bootstrap always-on (VmalertWorker.start → `_bootstrap_internal`):** idempotente; para cada tenant interno `status='active'` sin instancia `deployed` ni job `vmalert_deploy` queued/running: auto-placement (menor `tenants_count_active`, mismo criterio que §4.2), `has_alerts=true`, encola `vmalert_deploy` (cadena normal → regen). Cubre instalaciones previas y recuperación tras fallo.
+- **Bloqueos API (409):** `PUT .../vmalert/rules`, `DELETE /tenants/{id}` (borrado duro + soft) y `PASOS confirm1/confirm2` del hard-delete, y `POST .../vmalert/undeploy` sobre `is_internal=true`. Helper `_guard_internal_tenant`. Quedan permitidos: GET rules (visible), sync_rules, reload, deploy/redeploy y PUT genérico de tenant (campos no críticos).
+- **UI:** el editor de reglas se abre en solo-lectura (textarea `readOnly`, botones Guardar/Guardar+recargar deshabilitados) + badge "Control interno · reglas canónicas e inmutables".
+- **Overlap aceptado:** el vmalert single global (`up==0` genérico de `alert_rules.yml.j2`) sigue activo para todo el stack; las reglas internas por dominio cubren sus componentes con detalle, sin conflicto (ambas notifican a Alertmanager).
 ## 5. Frontend
 ABM: placement manual/auto, nodo vmalert (si manual), has_alerts. 
 Estado provisioning/deleting/error. 
@@ -226,7 +240,7 @@ Endpoints añadidos: deleteTenantConfirm1, deleteTenantConfirm2, fetchJob(job_id
 Contenedores: #alerts-config-container (Alerts conf), #modal-tenant-delete (hard-delete 2 pasos) y #modal-vmalert-rules (editor YAML). Mantener estructura modular.
 
 ### 5.6 Editor YAML
-Textarea (`#vmalert-rules-yaml`) por tenant para /vmalert/rules. Botones Guardar (PUT) + Guardar y recargar (PUT + POST /reload con polling). Estado visible en #vmalert-rules-status.
+Textarea (`#vmalert-rules-yaml`) por tenant. Botones: "Guardar reglas" (PUT → BD, mensaje "Reglas guardadas en la base de datos.") y "Guardar y sincronizar" (PUT → BD + POST `/vmalert/sync_rules` con polling de job, fase `reloading`). Estado visible en `#vmalert-rules-status`.
 
 ### 5.7 Consolas de administración vía UI proxy (scopes `vmalert` y `alertmanager_global`)
 

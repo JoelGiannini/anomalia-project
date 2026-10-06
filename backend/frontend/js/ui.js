@@ -352,7 +352,8 @@ export const ui = {
                     </div>
                     <div class="flex items-center space-x-2">
                         <button class="btn-vmalert-rules text-xs dynamic-card border px-2 py-1 rounded"
-                                data-tenant-id="${t.id}" data-tenant-slug="${t.slug || ''}">
+                                data-tenant-id="${t.id}" data-tenant-slug="${t.slug || ''}"
+                                data-tenant-internal="${t.is_internal ? '1' : '0'}">
                             Reglas
                         </button>
                         <button class="btn-vmalert-reload text-xs dynamic-card border px-2 py-1 rounded"
@@ -460,7 +461,8 @@ export const ui = {
                     </div>
                     <div class="flex items-center space-x-2">
                         <button class="btn-vmalert-rules-admin text-xs dynamic-card border px-2 py-1 rounded"
-                                data-tenant-id="${t.id}" data-tenant-slug="${t.slug || ''}">
+                                data-tenant-id="${t.id}" data-tenant-slug="${t.slug || ''}"
+                                data-tenant-internal="${t.is_internal ? '1' : '0'}">
                             Reglas
                         </button>
                         <button class="btn-vmalert-reload-admin text-xs dynamic-card border px-2 py-1 rounded"

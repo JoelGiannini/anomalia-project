@@ -53,7 +53,7 @@ class BaseWorker(ABC):
             placeholders = ','.join(['%s'] * len(self.job_types))
             cursor.execute(
                 f"""
-                SELECT id, type, ref_id, payload
+                SELECT id, type, ref_id
                 FROM job_state
                 WHERE type IN ({placeholders})
                   AND status = 'queued'
@@ -64,8 +64,16 @@ class BaseWorker(ABC):
                 tuple(self.job_types)
             )
             jobs = cursor.fetchall()
-            for job_id, job_type, ref_id, payload in jobs:
-                await self._execute_job(job_id, job_type, ref_id, payload or {})
+            if jobs:
+                cursor.execute(
+                    """UPDATE job_state
+                       SET status='running', started_at=NOW(), phase='processing', progress_pct=10
+                       WHERE id = ANY(%s)""",
+                    ([j[0] for j in jobs],)
+                )
+                conn.commit()
+            for job_id, job_type, ref_id in jobs:
+                await self._execute_job(job_id, job_type, ref_id, {})
         finally:
             cursor.close()
             conn.close()
@@ -84,7 +92,7 @@ class BaseWorker(ABC):
             await self.process_job(job_id, job_type, ref_id, payload)
 
             cursor.execute(
-                "UPDATE job_state SET status='completed', finished_at=NOW(), phase='done', progress_pct=100 WHERE id=%s",
+                "UPDATE job_state SET status='succeeded', finished_at=NOW(), phase='done', progress_pct=100 WHERE id=%s",
                 (job_id,)
             )
             conn.commit()
@@ -95,7 +103,7 @@ class BaseWorker(ABC):
             try:
                 cursor.execute(
                     "UPDATE job_state SET status='failed', finished_at=NOW(), phase='error', error_code=%s, logs_ref=%s WHERE id=%s",
-                    (type(e).__name__, str(e)[:500], job_id)
+                    (type(e).__name__[:50], str(e)[:255], job_id)
                 )
                 conn.commit()
             except Exception:

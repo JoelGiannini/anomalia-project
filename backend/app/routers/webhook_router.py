@@ -15,14 +15,6 @@ router = APIRouter(prefix="/api/v1/webhook", tags=["Webhooks"])
 logger = logging.getLogger(__name__)
 
 
-class AlertmanagerLabel(BaseModel):
-    __root__: Dict[str, str]
-
-
-class AlertmanagerAnnotation(BaseModel):
-    __root__: Dict[str, str]
-
-
 class AlertmanagerAlert(BaseModel):
     status: str
     labels: Dict[str, str]

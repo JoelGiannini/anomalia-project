@@ -5,7 +5,13 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/var/lib/anomalia/vmagent/data
+{% if vmagent_remote_write_url is defined %}
+{# Modo dirigido (spec 011 §4.3): la URL de remote-write llega por extra-var
+   (el inventario ad-hoc no expone grupos para resolver vmauth). #}
+ExecStart=/usr/local/bin/vmagent-prod -promscrape.config=/etc/anomalia/vmagent/vmagent.yaml -promscrape.config.strictParse=false -remoteWrite.url={{ vmagent_remote_write_url }} -httpListenAddr={{ vmagent_ip | default('127.0.0.1') }}:{{ vmagent_port | default('8429') }}
+{% else %}
 ExecStart=/usr/local/bin/vmagent-prod -promscrape.config=/etc/anomalia/vmagent/vmagent.yaml -promscrape.config.strictParse=false -remoteWrite.url=http://{{ hostvars[groups['vmauth_nodes'][0]].vmauth_ip | default(hostvars[groups['vmauth_nodes'][0]].ansible_host) | default('127.0.0.1') }}:{{ hostvars[groups['vmauth_nodes'][0]].vmauth_server_port | default('8427') }}/insert/prometheus/api/v1/write?tenant=METRICS -httpListenAddr={{ vmagent_ip | default(ansible_host) | default('127.0.0.1') }}:{{ vmagent_port | default('8429') }}
+{% endif %}
 Restart=on-failure
 
 [Install]

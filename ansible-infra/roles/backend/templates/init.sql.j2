@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS tenant_vmalert_instances (
     service VARCHAR(20) DEFAULT 'vmalert',
     unit_name VARCHAR(150) NOT NULL,
     rules_path VARCHAR(255) NOT NULL,
+    rules_yaml TEXT,                 -- fuente de verdad de reglas vmalert (spec 011/012)
     status VARCHAR(20) DEFAULT 'deployed' CHECK (status IN ('creating','deploying','deployed','error','stopped','undeployed')),
     health VARCHAR(10) DEFAULT 'unknown' CHECK (health IN ('ok','degraded','down','unknown')),
     last_deployed_at TIMESTAMP,
@@ -135,6 +136,12 @@ CREATE TABLE IF NOT EXISTS tenant_vmalert_instances (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uq_tvi_instance_port UNIQUE (instance_id, port)
 );
+
+-- Migración idempotente para BD existentes (el entrypoint initdb solo corre en
+-- la primera creación del volumen; este ALTER cubre reintentos posteriores).
+ALTER TABLE tenant_vmalert_instances ADD COLUMN IF NOT EXISTS rules_yaml TEXT;
+-- spec 011 §4.7: tenants de control interno con reglas canónicas inmutables.
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS is_internal BOOLEAN DEFAULT FALSE;
 
 CREATE TABLE IF NOT EXISTS port_mapping (
     id SERIAL PRIMARY KEY,
@@ -327,11 +334,11 @@ WHERE r.name = 'approvers' AND p.code = 'approvers'
 -- hard-delete (confirm_text == tenants.slug) seria imposible de satisfacer en
 -- los tenants sembrados aqui, y el nombre de la unidad systemd
 -- anomalia-vmalert-<slug>.service quedaria indefinido.
-INSERT INTO tenants (name, slug, display_name, org_id_upper, type, account_id, project_id, environment, port, description, is_audit) VALUES 
-('METRICS', 'metrics', 'METRICS', 'METRICS', 'metrics', 0, 0, 'default', 8400, 'Tenant para métricas de infraestructura (VictoriaMetrics - vminsert)', false),
-('TRACES', 'traces', 'TRACES', 'TRACES', 'traces', 0, 1, 'default', 8490, 'Tenant para trazas distribuidas OTLP (VictoriaTraces - vtinsert)', false),
-('PROFILES', 'profiles', 'PROFILES', 'PROFILES', 'profiles', NULL, NULL, 'default', 4040, 'Tenant de perfilado continuo vía Pyroscope (X-Scope-OrgID: PROFILES)', false),
-('AUDIT_LOGS', 'audit-logs', 'AUDIT_LOGS', 'AUDIT-LOGS', 'logs', 0, 3, 'default', 8480, 'Tenant para logs de auditoría (VictoriaLogs - vlinsert)', true)
+INSERT INTO tenants (name, slug, display_name, org_id_upper, type, account_id, project_id, environment, port, description, is_audit, has_alerts, is_internal, placement_mode) VALUES 
+('METRICS', 'metrics', 'METRICS', 'METRICS', 'metrics', 0, 0, 'default', 8400, 'Tenant para métricas de infraestructura (VictoriaMetrics - vminsert)', false, true, true, 'auto'),
+('TRACES', 'traces', 'TRACES', 'TRACES', 'traces', 0, 1, 'default', 8490, 'Tenant para trazas distribuidas OTLP (VictoriaTraces - vtinsert)', false, true, true, 'auto'),
+('PROFILES', 'profiles', 'PROFILES', 'PROFILES', 'profiles', NULL, NULL, 'default', 4040, 'Tenant de perfilado continuo vía Pyroscope (X-Scope-OrgID: PROFILES)', false, true, true, 'auto'),
+('AUDIT_LOGS', 'audit-logs', 'AUDIT_LOGS', 'AUDIT-LOGS', 'logs', 0, 3, 'default', 8480, 'Tenant para logs de auditoría (VictoriaLogs - vlinsert)', true, true, true, 'auto')
 ON CONFLICT (name) DO UPDATE SET 
     type = EXCLUDED.type,
     account_id = EXCLUDED.account_id,
@@ -339,6 +346,12 @@ ON CONFLICT (name) DO UPDATE SET
     port = EXCLUDED.port,
     description = EXCLUDED.description,
     is_audit = EXCLUDED.is_audit,
+    -- spec 011 §4.7: los tenants de control interno corren vmalert siempre-on
+    -- (has_alerts/is_internal/placement_mode se fuerzan en cada deploy, de modo
+    -- que el flag nunca depende de un estado previo de la instalacion).
+    has_alerts = TRUE,
+    is_internal = TRUE,
+    placement_mode = 'auto',
     -- Backfill idempotente: solo rellena los NULL de instalaciones previas a
     -- la spec 011, nunca pisa un slug ya establecido (es inmutable).
     slug = COALESCE(tenants.slug, EXCLUDED.slug),

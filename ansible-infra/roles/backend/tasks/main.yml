@@ -90,6 +90,8 @@
     mode: '0644'
   loop:
     - "install-binaries.yml"
+    - "sync-vmalert-rules.yml"
+    - "sync-scrapes.yml"
 
 - name: Reconstruir y levantar stack de contenedores con Compose como usuario anomalia
   ansible.builtin.shell: "{{ anomalia_compose_cmd }} up -d --build"

@@ -94,7 +94,7 @@
 
             <div class="relative">
                 <button id="profile-menu-button" class="flex items-center space-x-3 focus:outline-none dynamic-card hover:opacity-90 p-2 rounded-xl transition border">
-                    <img id="user-avatar" src="https://via.placeholder.com/40" alt="Avatar" class="w-8 h-8 rounded-full object-cover border-2 dynamic-border">
+                    <img id="user-avatar" src="/media/default.png" alt="Avatar" class="w-8 h-8 rounded-full object-cover border-2 dynamic-border">
                     <div class="text-left hidden md:block">
                         <p id="user-display-name" class="text-sm font-semibold leading-tight">Cargando...</p>
                         <p id="user-display-role" class="text-xs opacity-75">Rol: --</p>
@@ -663,6 +663,9 @@
                 Archivo del tenant: <code id="vmalert-rules-path" class="font-mono">-</code>
             </p>
             <div id="vmalert-rules-status" class="text-xs opacity-75">Cargando reglas...</div>
+            <div id="vmalert-rules-internal-badge" class="hidden">
+                <span class="dynamic-accent px-2 py-1 rounded-xl text-xs font-semibold">Control interno · reglas canónicas e inmutables</span>
+            </div>
             <div class="flex flex-col md:flex-row gap-4 h-[60vh]">
                 <textarea id="vmalert-rules-yaml" rows="18" spellcheck="false"
                           class="w-full md:w-2/3 dynamic-input border rounded-xl px-3 py-2 font-mono text-xs"
@@ -813,7 +816,7 @@
 
             <div class="space-y-4 text-sm">
                 <div class="flex items-center space-x-4">
-                    <img id="modal-avatar-preview" src="https://via.placeholder.com/80" alt="Avatar Preview" class="w-16 h-16 rounded-full object-cover border-2 dynamic-border shadow-md">
+                    <img id="modal-avatar-preview" src="/media/default.png" alt="Avatar Preview" class="w-16 h-16 rounded-full object-cover border-2 dynamic-border shadow-md">
                     <div class="flex-1">
                         <label class="block text-xs uppercase opacity-75 mb-1 font-semibold">Cambiar Foto de Perfil</label>
                         <input type="file" id="input-user-avatar-file" accept="image/*" class="w-full text-xs file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold dynamic-accent cursor-pointer">

@@ -11,6 +11,7 @@ import uuid
 import psycopg2
 import socket
 import re
+import yaml
 from ..database import get_db_connection
 from ..models import (
     UserCreateRequest, 
@@ -70,12 +71,12 @@ def get_catalogs():
         cursor.execute("SELECT name, description FROM roles ORDER BY id ASC;")
         roles = [{"name": r[0], "description": r[1]} for r in cursor.fetchall()]
 
-        cursor.execute("SELECT id, name, slug, type, environment, port, description, org_id_upper, status, instance_id, has_alerts, placement_mode FROM tenants ORDER BY id ASC;")
+        cursor.execute("SELECT id, name, slug, type, environment, port, description, org_id_upper, status, instance_id, has_alerts, placement_mode, is_internal FROM tenants ORDER BY id ASC;")
         tenants = [{
             "id": t[0], "name": t[1], "slug": t[2], "type": t[3],
             "environment": t[4], "port": t[5], "description": t[6],
             "org_id_upper": t[7], "status": t[8], "instance_id": t[9],
-            "has_alerts": t[10], "placement_mode": t[11]
+            "has_alerts": t[10], "placement_mode": t[11], "is_internal": t[12]
         } for t in cursor.fetchall()]
 
         cursor.execute("SELECT id, code, name, description FROM profiles ORDER BY id ASC;")
@@ -226,7 +227,7 @@ def get_tenants_admin():
         cursor.execute(
             """SELECT id, name, type, account_id, project_id, environment, port, description,
                       slug, display_name, org_id_upper, status, instance_id, vmalert_node_id,
-                      vmalert_port, has_alerts, placement_mode
+                      vmalert_port, has_alerts, placement_mode, is_internal
                FROM tenants ORDER BY id ASC;"""
         )
         rows = cursor.fetchall()
@@ -238,7 +239,8 @@ def get_tenants_admin():
                 "environment": r[5], "port": r[6], "description": r[7],
                 "slug": r[8], "display_name": r[9], "org_id_upper": r[10],
                 "status": r[11], "instance_id": r[12], "vmalert_node_id": r[13],
-                "vmalert_port": r[14], "has_alerts": r[15], "placement_mode": r[16]
+                "vmalert_port": r[14], "has_alerts": r[15], "placement_mode": r[16],
+                "is_internal": r[17]
             })
         return {"tenants": tenants}
     finally:
@@ -399,6 +401,7 @@ def delete_tenant(tenant_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
+        _guard_internal_tenant(cursor, tenant_id, "Eliminar el tenant")
         cursor.execute("DELETE FROM user_tenants WHERE tenant_id = %s;", (tenant_id,))
         cursor.execute("DELETE FROM role_tenants WHERE tenant_id = %s;", (tenant_id,))
         cursor.execute("DELETE FROM tenants WHERE id = %s;", (tenant_id,))
@@ -407,6 +410,19 @@ def delete_tenant(tenant_id: int):
     finally:
         cursor.close()
         conn.close()
+
+def _guard_internal_tenant(cursor, tenant_id: int, action: str):
+    """Bloquea operaciones destructivas sobre tenants de control interno
+    (spec 011 §4.7). Las reglas internas son inmutables por diseño."""
+    cursor.execute("SELECT is_internal FROM tenants WHERE id = %s;", (tenant_id,))
+    row = cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Tenant no encontrado")
+    if row[0]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{action}: el tenant es de control interno y no admite modificaciones.",
+        )
 
 # --- ROLES (roles_manager) ---
 @router.get("/roles", dependencies=[Depends(verify_profile_access("roles_manager"))])
@@ -795,6 +811,7 @@ def delete_tenant_confirm1(tenant_id: int, payload: DeleteTenantConfirm1):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
+        _guard_internal_tenant(cursor, tenant_id, "Eliminar el tenant")
         cursor.execute("SELECT slug FROM tenants WHERE id = %s;", (tenant_id,))
         row = cursor.fetchone()
         if not row:
@@ -826,6 +843,7 @@ def delete_tenant_confirm2(tenant_id: int, payload: DeleteTenantConfirm2):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
+        _guard_internal_tenant(cursor, tenant_id, "Eliminar el tenant")
         cursor.execute("SELECT slug FROM tenants WHERE id = %s;", (tenant_id,))
         row = cursor.fetchone()
         if not row:
@@ -878,13 +896,14 @@ def get_vmalert_rules(tenant_id: int):
         row = cursor.fetchone()
         if not row or not row[0]:
             raise HTTPException(status_code=404, detail="Tenant no encontrado")
-        slug = row[0]
-        import os
-        path_rules = f"/opt/anomalia/vmalert-rules/{slug}/alert_rules.yml"
-        if not os.path.exists(path_rules):
-            return {"yaml": ""}
-        with open(path_rules) as f:
-            return {"yaml": f.read()}
+        # La BD es la fuente de verdad de las reglas (spec 011/012); el nodo la
+        # materializa en rules_path vía el job vmalert_sync_rules.
+        cursor.execute(
+            "SELECT rules_yaml FROM tenant_vmalert_instances WHERE tenant_id = %s;",
+            (tenant_id,)
+        )
+        inst = cursor.fetchone()
+        return {"yaml": (inst[0] if inst and inst[0] else "")}
     finally:
         cursor.close()
         conn.close()
@@ -898,14 +917,50 @@ def put_vmalert_rules(tenant_id: int, payload: VMAlerterRulesPut):
         row = cursor.fetchone()
         if not row or not row[0]:
             raise HTTPException(status_code=404, detail="Tenant no encontrado")
-        slug = row[0]
-        import os
-        d = f"/opt/anomalia/vmalert-rules/{slug}"
-        os.makedirs(d, exist_ok=True)
-        path_rules = f"{d}/alert_rules.yml"
-        with open(path_rules, "w") as f:
-            f.write(payload.yaml or "")
+        _guard_internal_tenant(cursor, tenant_id, "Modificar las reglas")
+
+        # Validar YAML antes de persistir (el nodo recarga esto tal cual).
+        if payload.yaml and payload.yaml.strip():
+            try:
+                yaml.safe_load(payload.yaml)
+            except yaml.YAMLError as exc:
+                raise HTTPException(status_code=400, detail=f"YAML inválido: {exc}")
+
+        cursor.execute(
+            "UPDATE tenant_vmalert_instances SET rules_yaml = %s, updated_at = CURRENT_TIMESTAMP WHERE tenant_id = %s;",
+            (payload.yaml or "", tenant_id)
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(
+                status_code=409,
+                detail="El tenant no tiene una instancia vmalert desplegada. Desplegue vmalert antes de guardar reglas.",
+            )
+        conn.commit()
         return {"status": "ok"}
+    finally:
+        cursor.close()
+        conn.close()
+
+@router.post("/tenants/{tenant_id}/vmalert/sync_rules", dependencies=[Depends(verify_profile_access("alerts_manager"))])
+def sync_vmalert_rules(tenant_id: int):
+    """Materializa las reglas guardadas en la BD hacia el nodo y recarga vmalert (job)."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT rules_yaml FROM tenant_vmalert_instances WHERE tenant_id = %s AND status = 'deployed';",
+            (tenant_id,)
+        )
+        inst = cursor.fetchone()
+        if not inst:
+            raise HTTPException(
+                status_code=409,
+                detail="El tenant no tiene una instancia vmalert desplegada.",
+            )
+        job_id = str(uuid.uuid4())
+        cursor.execute("""INSERT INTO job_state (id, type, ref_id, status, phase, progress_pct, created_by) VALUES (%s, %s, %s, %s, %s, %s, %s);""", (job_id, "vmalert_sync_rules", tenant_id, "queued", "init", 0, None))
+        conn.commit()
+        return {"status": "accepted", "job_id": job_id}
     finally:
         cursor.close()
         conn.close()
@@ -954,6 +1009,7 @@ def undeploy_vmalert(tenant_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
+        _guard_internal_tenant(cursor, tenant_id, "Desplegar instancia vmalert")
         job_id = str(uuid.uuid4())
         cursor.execute("""INSERT INTO job_state (id, type, ref_id, status, phase, progress_pct, created_by) VALUES (%s, %s, %s, %s, %s, %s, %s);""", (job_id, "vmalert_undeploy", tenant_id, "queued", "init", 0, None))
         conn.commit()

@@ -99,12 +99,25 @@ Cada contexto tiene system prompt estricto que:
 ## 8. Workers Background
 
 ### TenantWorker (30s interval)
-- Procesa `tenant_create`, `tenant_delete`
+- Procesa `tenant_create`, `tenant_delete`, `parses_provision`
 - Auto-genera IDs, seed datasources, auto-placement, encola jobs dependientes
+- `parses_provision`: provisiona Parses para cada usuario activo con acceso al tenant (idempotente, vía `provision_user_parses` en `asyncio.to_thread`); error parcial → job `failed`
 
 ### VmalertWorker (30s interval)
-- Procesa `vmalert_deploy`, `vmalert_undeploy`, `vmalert_redeploy`
+- Procesa `vmalert_deploy`, `vmalert_undeploy`, `vmalert_redeploy`, `vmalert_reload`, `vmalert_sync_rules`, `vmalert_regen_scrapes`
 - Asigna puertos, ejecuta Ansible, registra instancias
+- `vmalert_reload` / `vmalert_sync_rules`: healthcheck `/-/health` + `POST /-/reload` compartidos en el helper `_http_reload_vmalert` (timeout 10s, 3 reintentos, backoff 2s/4s)
+- `vmalert_sync_rules`: **BD = fuente de verdad**. Lee `rules_yaml` del tenant, lo materializa en `/etc/anomalia/vmalert/<slug>/alert_rules.yml` del nodo vía playbook `sync-vmalert-rules.yml` y recarga vmalert
+- `_run_ansible_vmalert` parametrizado por `playbook` (default `install-binaries.yml`); materializa cada `rules_yaml` a un archivo temporal (`0600`) y lo pasa vía extra-var `vmalert_rules_files` como `{src, dest, rules_path}` → `copy` con `src` (no `content`: evita que Jinja evalúe PromQL `{{ }}` de labels de alerta)
+- `vmalert_deploy` preserva `rules_yaml` existente del tenant en redeploys (SELECT previo → extra-var → INSERT `ON CONFLICT` incluye la columna)
+- **Tenants de control interno (spec 011 §4.9):** el SELECT del deploy incluye `is_internal`; si es `true` la instancia recibe siempre la regla canónica `INTERNAL_RULES[slug]` (`backend/app/internal_rules/*.yaml`, cargado por `internal_rules.py`) — se pisa en cada deploy y se persiste en `rules_yaml`. Bootstrap `_bootstrap_internal()` en `start()`: idempotente, encola `vmalert_deploy` (con auto-placement de menor carga) para cada tenant interno sin instancia `deployed` ni job pendiente → always-on.
+- `vmalert_regen_scrapes` (spec 011 §4.3/§4.4): al terminar deploy/undeploy se encola; lee de la BD todos los componentes (`infra_components` = `{component, ip, port}` con crendenciales del nodo) + todas las instancias vmalert por-tenant `deployed`, y regenera vmagent y/o vmauth vía playbook `sync-scrapes.yml` (sin descargar binarios) usando la extra-var `regen_components`; inyecta en modo flat `vmagent_remote_write_url`, `vmagent_ip/port`, `vmauth_ip/vmauth_server_port`. Reutiliza `_run_ansible_vmalert` (mismo temp extra-vars `0600`). `_get_component_url` resuelve URLs desde `infrastructure_nodes` con fallback a localhost.
+- Modo flat (dirigido): los templates de vmagent/vmauth renderizan desde `infra_components` cuando está definido; `vmalert_instances` añade los jobs `vmalert-<tenant_slug>` con relabels (incl. `org_id_upper`). El modo inventario queda intacto.
+
+### BaseWorker (polling seguro)
+- `SELECT ... FOR UPDATE SKIP LOCKED` + `UPDATE status='running'` + `COMMIT` **en la misma transacción** antes de procesar: evita que el `UPDATE` de `_execute_job` (conexión separada) bloquee el event loop sobre los locks retenidos.
+- Terminal status: `succeeded` (no `completed`, CHECK constraint de `job_state`).
+- En fallo: `error_code` truncado a 50 chars y `logs_ref` a 255 chars (límites de columna) para que el UPDATE de error no falle y el job no quede colgado en `running`.
 
 ### Integración en FastAPI
 ```python
@@ -146,18 +159,27 @@ async def lifespan(app: FastAPI):
 
 ### install-binaries.yml
 - Recibe `vmalert_instances` como extra_vars
-- Role `vmalert` en modo dual (por tenant + single) ya implementado
-- Crea systemd units `anomalia-vmalert-{slug}.service`
+- Define `nombre_usuario: "anomalia"` (requerido por el rol `vmalert`)
+- Tras el bloque vmutils, hace `include_role: name=vmalert` **solo si** `vmalert_instances` está definido y no vacío → crea systemd units `anomalia-vmalert-{slug}.service`
+- En modo por-tenant **no** reinicia la unit single `anomalia-vmalert.service` (condición explícita en la task de restart de vmutils)
 
-### Vmalert Service Template
+### Rol vmalert (dual-mode)
+- `vmalert_state` extra-var: `present` (default) crea/arranca units; `absent` (undeploy) detiene/deshabilita y elimina la unit por tenant (tolerancia si la unit no existe)
+- Reglas por tenant en `{{ item.rules_path }}/alert_rules.yml`
+- Si la extra-var `vmalert_rules_files` trae más de una entrada (BD como fuente de verdad): copia esos archivos `{src → dest}` y **no** aplica la plantilla por defecto; si la lista está vacía o ausente, aplica `alert_rules.yml.j2` por instancia
+
+### Vmalert Service Template (dual-mode)
+- Si `item is definido` (modo por-tenant): usa `item.datasource_url`, `item.remote_write_url`, `item.alertmanager_url`, `item.rules_path`, `item.port` — **no** consulta `groups[...]`/`hostvars[...]` (el inventario ad-hoc del worker `-i {ip},` no tiene grupos)
+- Si `item` no está definido (modo single): conserva el lookup por inventario (`vm_select_nodes`/`vm_insert_nodes`/`alertmanager_nodes`)
+
 ```ini
 [Service]
 ExecStart=/usr/local/bin/vmalert
-  --datasource.url=http://vmselect:8401
-  --remoteRead.url=http://vmselect:8401
-  --remoteWrite.url=http://vminsert:8400
-  -notifier.url=http://alertmanager:9093
-  -rule=/etc/anomalia/vmalert/{tenant_slug}/alert_rules.yml
+  --datasource.url={datasource_url}
+  --remoteRead.url={datasource_url}
+  --remoteWrite.url={remote_write_url}
+  -notifier.url={alertmanager_url}
+  -rule={rules_path}/alert_rules.yml
   --httpListenAddr=:{port}
 ```
 
