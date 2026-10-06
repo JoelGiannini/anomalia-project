@@ -1,24 +1,63 @@
 ---
-- name: Crear directorio de configuración para vmalert con propiedad de anomalia
-  ansible.builtin.file:
-    path: /etc/anomalia/vmalert
-    state: directory
-    owner: "{{ nombre_usuario }}"
-    group: "{{ nombre_usuario }}"
-    mode: '0755'
+- name: Modo por-tenant (dual-mode)
+  when: vmalert_instances is defined and vmalert_instances|length > 0
+  block:
+    - name: Crear directorios por tenant
+      ansible.builtin.file:
+        path: "{{ item.rules_path }}"
+        state: directory
+        owner: "{{ nombre_usuario }}"
+        group: "{{ nombre_usuario }}"
+        mode: "0755"
+      loop: "{{ vmalert_instances }}"
 
-- name: Copiar reglas de alertas básicas asignadas a anomalia
-  ansible.builtin.template:
-    src: alert_rules.yml.j2
-    dest: /etc/anomalia/vmalert/alert_rules.yml
-    owner: "{{ nombre_usuario }}"
-    group: "{{ nombre_usuario }}"
-    mode: '0644'
-  notify: Recargar systemd y reiniciar vmalert
+    - name: Copiar reglas por tenant
+      ansible.builtin.template:
+        src: alert_rules.yml.j2
+        dest: "{{ item.rules_path }}/alert_rules.yml"
+        owner: "{{ nombre_usuario }}"
+        group: "{{ nombre_usuario }}"
+        mode: "0644"
+      loop: "{{ vmalert_instances }}"
 
-- name: Copiar servicio systemd para vmalert
-  ansible.builtin.template:
-    src: vmalert.service.j2
-    dest: /etc/systemd/system/anomalia-vmalert.service
-    mode: '0644'
-  notify: Recargar systemd y reiniciar vmalert
+    - name: Crear unidades systemd por tenant
+      ansible.builtin.template:
+        src: vmalert.service.j2
+        dest: "/etc/systemd/system/anomalia-vmalert-{{ item.tenant_slug }}.service"
+        mode: "0644"
+      loop: "{{ vmalert_instances }}"
+
+    - name: Habilitar y arrancar instancias por tenant
+      ansible.builtin.systemd:
+        name: "anomalia-vmalert-{{ item.tenant_slug }}.service"
+        state: started
+        enabled: yes
+        daemon_reload: yes
+      loop: "{{ vmalert_instances }}"
+
+- name: Modo single (retrocompatible)
+  when: not (vmalert_instances is defined and vmalert_instances|length > 0)
+  block:
+    - name: Crear directorio de configuración para vmalert con propiedad de anomalia
+      ansible.builtin.file:
+        path: /etc/anomalia/vmalert
+        state: directory
+        owner: "{{ nombre_usuario }}"
+        group: "{{ nombre_usuario }}"
+        mode: "0755"
+
+    - name: Copiar reglas de alertas básicas asignadas a anomalia
+      ansible.builtin.template:
+        src: alert_rules.yml.j2
+        dest: /etc/anomalia/vmalert/alert_rules.yml
+        owner: "{{ nombre_usuario }}"
+        group: "{{ nombre_usuario }}"
+        mode: "0644"
+      notify: Recargar systemd y reiniciar vmalert
+
+    - name: Copiar servicio systemd para vmalert
+      ansible.builtin.template:
+        src: vmalert.service.j2
+        dest: /etc/systemd/system/anomalia-vmalert.service
+        mode: "0644"
+      notify: Recargar systemd y reiniciar vmalert

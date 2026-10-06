@@ -146,3 +146,24 @@ scrape_configs:
           - '{{ hostvars[host].parses_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].parses_port | default(8090) }}'
 {% endfor %}
 {% endif %}
+{% if vmalert_instances is defined and vmalert_instances | length > 0 %}{% for vi in vmalert_instances %}
+  - job_name: 'vmalert-{{ vi.tenant_slug | default("tenant") }}'
+    scrape_interval: 30s
+    scheme: http
+    static_configs:
+      - targets:
+          - '{{ vi.node_ip | default(hostvars[groups.get("vmalert_nodes", ["127.0.0.1"])[0]].ansible_host | default("127.0.0.1")) }}:{{ vi.port | default(8880) }}'
+    relabel_configs:
+      - target_label: component
+        replacement: vmalert
+      - target_label: service
+        replacement: vmalert
+      - target_label: tenant_id
+        replacement: '{{ vi.tenant_id | default("") }}'
+      - target_label: tenant_slug
+        replacement: '{{ vi.tenant_slug | default("") }}'
+      - target_label: instance_id
+        replacement: '{{ vi.instance_id | default("") }}'
+      - target_label: org_id_upper
+        replacement: '{{ vi.org_id_upper | default("") }}'
+{% endfor %}{% endif %}

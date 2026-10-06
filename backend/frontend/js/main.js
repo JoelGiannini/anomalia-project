@@ -143,6 +143,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             if (tabName === 'infra') admin.loadInfraNodes();
             if (tabName === 'ai') admin.loadAIConfig();
             if (tabName === 'approvals') admin.loadApprovals?.();
+            if (tabName === 'alerts') ui.renderAdminAlertsConfig?.();
         }
     });
 
@@ -245,6 +246,14 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     document.getElementById('btn-save-user')?.addEventListener('click', () => admin.saveUser());
     document.getElementById('btn-save-tenant')?.addEventListener('click', () => admin.saveTenant());
+
+    // Hard-delete de tenant en 2 pasos (specs/011 §3 y F5).
+    document.getElementById('btn-tenant-delete-step1')?.addEventListener('click', () => admin.tenantDeleteStep1());
+    document.getElementById('btn-tenant-delete-step2')?.addEventListener('click', () => admin.tenantDeleteStep2());
+
+    // Editor de reglas vmalert por tenant (specs/011 F5).
+    document.getElementById('btn-vmalert-rules-save')?.addEventListener('click', () => admin.saveVmalertRules(false));
+    document.getElementById('btn-vmalert-rules-reload')?.addEventListener('click', () => admin.saveVmalertRules(true));
     document.getElementById('btn-save-role')?.addEventListener('click', () => admin.saveRole());
     document.getElementById('btn-save-profile')?.addEventListener('click', () => admin.saveProfile());
     document.getElementById('btn-save-infra')?.addEventListener('click', () => admin.saveInfraNode());
@@ -264,7 +273,29 @@ document.addEventListener("DOMContentLoaded", async () => {
             admin.openTenantModal(data);
         }
         if (e.target.closest('.btn-delete-tenant')) {
-            admin.deleteTenant(e.target.closest('.btn-delete-tenant').getAttribute('data-delete-tenant'));
+            // Hard-delete en 2 pasos (specs/011 §3). El borrado simple e
+            // inmediato quedo obsoleto: deja vmalert, reglas y puertos huerfanos.
+            admin.hardDeleteTenant(e.target.closest('.btn-delete-tenant').getAttribute('data-delete-tenant'));
+        }
+        // Tarjeta Alerts (conf): editor de reglas y reload de vmalert por tenant.
+        // Se wirea por delegacion sobre el contenedor estatico porque los botones
+        // se recrean en cada renderAlertsConfig().
+        if (e.target.closest('.btn-vmalert-rules')) {
+            const btn = e.target.closest('.btn-vmalert-rules');
+            admin.openVmalertRulesModal(btn.getAttribute('data-tenant-id'), btn.getAttribute('data-tenant-slug'));
+        }
+        if (e.target.closest('.btn-vmalert-reload')) {
+            const btn = e.target.closest('.btn-vmalert-reload');
+            admin.reloadVmalert(btn.getAttribute('data-tenant-id'), btn);
+        }
+        // Admin Alerts (conf) versions - same logic but different class names
+        if (e.target.closest('.btn-vmalert-rules-admin')) {
+            const btn = e.target.closest('.btn-vmalert-rules-admin');
+            admin.openVmalertRulesModal(btn.getAttribute('data-tenant-id'), btn.getAttribute('data-tenant-slug'));
+        }
+        if (e.target.closest('.btn-vmalert-reload-admin')) {
+            const btn = e.target.closest('.btn-vmalert-reload-admin');
+            admin.reloadVmalert(btn.getAttribute('data-tenant-id'), btn);
         }
         if (e.target.closest('.btn-edit-role')) {
             const data = JSON.parse(e.target.closest('.btn-edit-role').getAttribute('data-edit-role'));
@@ -295,4 +326,159 @@ document.addEventListener("DOMContentLoaded", async () => {
             admin.deleteInfraNode(e.target.closest('.btn-delete-infra').getAttribute('data-delete-infra'));
         }
     });
+
+    // ============ AI Assistant Floating Panel ============
+    (function() {
+        const toggleBtn = document.getElementById('ai-assistant-toggle');
+        const panel = document.getElementById('ai-assistant-panel');
+        const closeBtn = document.getElementById('ai-assistant-close');
+        const sendBtn = document.getElementById('ai-assistant-send');
+        const input = document.getElementById('ai-assistant-input');
+        const messagesContainer = document.getElementById('ai-assistant-messages');
+        const contextEl = document.getElementById('ai-assistant-context');
+        const hintEl = document.getElementById('ai-assistant-hint');
+        const contextBtn = document.getElementById('ai-assistant-context-btn');
+        const badge = document.getElementById('ai-assistant-badge');
+
+        if (!toggleBtn || !panel) return;
+
+        let isOpen = false;
+        let currentContext = 'general';
+        let unreadCount = 0;
+
+        const CONTEXTS = {
+            general: { label: 'Asistente General', hint: 'Pregunta lo que necesites', aiContext: 'parses_query' },
+            metrics: { label: 'VictoriaMetrics', hint: 'PromQL, métricas, dashboards', aiContext: 'victoria_metrics_query' },
+            logs: { label: 'VictoriaLogs', hint: 'LogsQL, búsqueda de logs', aiContext: 'victoria_logs_query' },
+            traces: { label: 'VictoriaTraces', hint: 'Búsqueda de trazas, latencia', aiContext: 'victoria_traces_query' },
+            profiling: { label: 'Pyroscope', hint: 'Profiling CPU/memoria, flamegraphs', aiContext: 'pyroscope_query' },
+            dashboards: { label: 'Parses/Dashboards', hint: 'Dashboards, paneles, variables', aiContext: 'parses_query' },
+            alerts: { label: 'Alertas', hint: 'Reglas vmalert, Alertmanager', aiContext: 'vmalert_rules' },
+        };
+
+        let currentTenantId = null;
+
+        function openPanel() {
+            panel.classList.remove('hidden');
+            panel.classList.add('flex');
+            toggleBtn.classList.add('hidden');
+            document.getElementById('ai-assistant-input')?.focus();
+        }
+
+        function closePanel() {
+            panel.classList.add('hidden');
+            panel.classList.remove('flex');
+            toggleBtn.classList.remove('hidden');
+        }
+
+        function setContext(ctx) {
+            currentContext = ctx;
+            const c = CONTEXTS[ctx] || CONTEXTS.general;
+            const contextEl = document.getElementById('ai-assistant-context');
+            const hintEl = document.getElementById('ai-assistant-hint');
+            if (contextEl) contextEl.textContent = c.label;
+            if (hintEl) hintEl.textContent = c.hint;
+        }
+
+        function addMessage(role, text) {
+            const container = document.getElementById('ai-assistant-messages');
+            if (!container) return;
+            const div = document.createElement('div');
+            div.className = `flex ${role === 'user' ? 'justify-end' : 'justify-start'}`;
+            div.innerHTML = role === 'user'
+                ? `<div class="bg-primary/20 text-primary rounded-xl px-3 py-2 max-w-[85%] text-xs">${text}</div>`
+                : `<div class="dynamic-card border rounded-xl px-3 py-2 max-w-[85%] text-xs">${text}</div>`;
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('ai-assistant-input');
+            const text = input?.value?.trim();
+            if (!text) return;
+
+            addMessage('user', text);
+            input.value = '';
+            input.disabled = true;
+
+            try {
+                const response = await api.aiChat({
+                    context: CONTEXTS[currentContext]?.aiContext || 'parses_query',
+                    messages: [{ role: 'user', content: text }],
+                    tenant_id: currentTenantId
+                });
+                addMessage('assistant', response.response);
+            } catch (err) {
+                addMessage('assistant', `Error: ${err.message || err}`);
+            }
+        }
+
+        // Toggle button
+        document.getElementById('ai-assistant-toggle')?.addEventListener('click', () => {
+            const panel = document.getElementById('ai-assistant-panel');
+            if (panel.classList.contains('hidden')) {
+                openPanel();
+            } else {
+                closePanel();
+            }
+        });
+
+        // Close button
+        document.getElementById('ai-assistant-close')?.addEventListener('click', closePanel);
+
+        // Send button
+        document.getElementById('ai-assistant-send')?.addEventListener('click', sendMessage);
+
+        // Enter key
+        document.getElementById('ai-assistant-input')?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // Context switcher (simplified - could be expanded with dropdown)
+        document.getElementById('ai-assistant-context-btn')?.addEventListener('click', () => {
+            const contexts = Object.keys(CONTEXTS);
+            const currentIdx = contexts.indexOf(currentContext);
+            const nextIdx = (currentIdx + 1) % contexts.length;
+            setContext(contexts[nextIdx]);
+        });
+
+        // Enter key to send
+        document.getElementById('ai-assistant-input')?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // Listen for tenant selection to update context
+        document.addEventListener('tenant-selected', (e) => {
+            currentTenantId = e.detail.tenantId;
+            const badge = document.getElementById('ai-assistant-badge');
+            if (badge) {
+                badge.textContent = '●';
+                badge.classList.remove('hidden');
+            }
+        });
+
+        // Listen for console tab changes to auto-switch context
+        document.addEventListener('tab-changed', (e) => {
+            const tab = e.detail.tab;
+            if (CONTEXTS[tab]) {
+                setContext(tab);
+            }
+        });
+
+        // Initialize
+        setContext('general');
+
+        // Show toggle button if user has alerts_manager or admin profile
+        const profiles = state.currentUserProfiles || [];
+        if (profiles.includes('alerts_manager') || profiles.includes('admin')) {
+            document.getElementById('ai-assistant-toggle').style.display = 'flex';
+        }
+    })();
+    // ============ End AI Assistant ============
 });

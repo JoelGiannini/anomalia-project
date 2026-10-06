@@ -52,6 +52,11 @@ class TenantPayload(BaseModel):
     environment: Optional[str] = "default"
     port: Optional[int] = 8427
     description: Optional[str] = ""
+    has_alerts: Optional[bool] = False
+    placement_mode: Optional[str] = "manual"  # manual | auto
+    vmalert_node_id: Optional[int] = None
+    vmalert_port: Optional[int] = None
+    display_name: Optional[str] = None
 
 class AuthNodePayload(BaseModel):
     name: Optional[str] = None
@@ -66,3 +71,26 @@ class AuthNodePayload(BaseModel):
     status: Optional[str] = "operational"
     is_active: Optional[bool] = True
     description: Optional[str] = ""
+
+class DeleteTenantConfirm1(BaseModel):
+    reason: Optional[str] = None
+
+class DeleteTenantConfirm2(BaseModel):
+    challenge_id: str
+    confirm_text: str  # debe coincidir con tenant.slug
+
+class VMAlerterRulesPut(BaseModel):
+    yaml: str
+
+class JobStateOut(BaseModel):
+    id: str
+    type: Optional[str] = None
+    ref_id: Optional[int] = None
+    status: Optional[str] = None
+    phase: Optional[str] = None
+    progress_pct: Optional[int] = 0
+    logs_ref: Optional[str] = None
+    error_code: Optional[str] = None
+    result: Optional[dict] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None

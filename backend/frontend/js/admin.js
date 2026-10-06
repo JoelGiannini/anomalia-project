@@ -1,5 +1,5 @@
 import { api } from './api.js';
-import { state } from './state.js';
+import { state, pollJob } from './state.js';
 import { ui } from './ui.js';
 
 export const admin = {
@@ -183,7 +183,7 @@ export const admin = {
         }
     },
 
-    openTenantModal(t = null) {
+    async openTenantModal(t = null) {
         const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
         setVal('tenant-id', t ? t.id : '');
         setVal('tenant-input-name', t ? t.name : '');
@@ -193,6 +193,46 @@ export const admin = {
         setVal('tenant-input-project', t ? t.project_id : 0);
         setVal('tenant-input-port', t ? t.port : 8400);
         setVal('tenant-input-desc', t && t.description ? t.description : '');
+        setVal('tenant-input-placement', t ? t.placement_mode : 'manual');
+        
+        const nodeSelect = document.getElementById('tenant-input-vmalert-node');
+        const placementSelect = document.getElementById('tenant-input-placement');
+        
+        if (nodeSelect) {
+            nodeSelect.disabled = true;
+            nodeSelect.innerHTML = '<option value="">Cargando nodos...</option>';
+        }
+        
+        // Cargar nodos vmalert
+        try {
+            const nodesData = await api.fetchVmalertNodes();
+            if (nodeSelect && nodesData.nodes) {
+                nodeSelect.innerHTML = '<option value="">-- Seleccionar nodo --</option>';
+                nodesData.nodes.forEach(n => {
+                    const opt = document.createElement('option');
+                    opt.value = n.id;
+                    opt.textContent = `${n.hostname} (${n.service_ip || n.ip_address}:${n.port}) - ${n.available_slots}/${n.capacity_slots} slots`;
+                    if (n.available_slots <= 0) opt.disabled = true;
+                    nodeSelect.appendChild(opt);
+                }
+            }
+        } catch (e) {
+            console.error('Error cargando nodos vmalert:', e);
+            if (nodeSelect) nodeSelect.innerHTML = '<option value="">Error cargando nodos</option>';
+        }
+        
+        if (t && nodeSelect) {
+            nodeSelect.value = t.vmalert_node_id || '';
+        }
+        
+        const updateNodeSelector = () => {
+            if (nodeSelect && placementSelect) {
+                nodeSelect.disabled = placementSelect.value !== 'manual';
+            }
+        };
+        placementSelect?.addEventListener('change', updateNodeSelector);
+        updateNodeSelector();
+        
         const titleEl = document.getElementById('modal-tenant-title');
         if (titleEl) titleEl.innerText = t ? 'Editar Tenant' : 'Crear Tenant';
         ui.toggleModal('modal-tenant', true);
@@ -207,6 +247,9 @@ export const admin = {
         const project_id = parseInt(document.getElementById('tenant-input-project')?.value || 0);
         const port = parseInt(document.getElementById('tenant-input-port')?.value || 8400);
         const description = document.getElementById('tenant-input-desc')?.value;
+        const placement_mode = document.getElementById('tenant-input-placement')?.value;
+        const vmalert_node_id = document.getElementById('tenant-input-vmalert-node')?.value ? 
+            parseInt(document.getElementById('tenant-input-vmalert-node')?.value) : null;
         const token = api.getToken();
 
         const method = id ? 'PUT' : 'POST';
@@ -216,7 +259,10 @@ export const admin = {
             const res = await fetch(url, {
                 method,
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ name, type, account_id, project_id, environment, port, description })
+                body: JSON.stringify({ 
+                    name, type, account_id, project_id, environment, port, description,
+                    placement_mode, vmalert_node_id
+                })
             });
 
             if (res.ok) {
@@ -232,16 +278,317 @@ export const admin = {
         }
     },
 
-    async deleteTenant(id) {
-        if (!confirm("¿Estás seguro de eliminar este tenant?")) return;
-        const token = api.getToken();
+    // Hard-delete explícito en 2 pasos (specs/011 §3):
+    //   Paso 1 -> el backend genera un challenge_id de un solo uso (TTL 10 min).
+    //   Paso 2 -> hay que escribir el slug EXACTO del tenant; el backend lo
+    //             compara con tenants.slug y devuelve 202 + job_id.
+    // El borrado real es asíncrono, así que se hace polling del job.
+    // Hard-delete explicito en 2 pasos dentro de un modal (specs/011 §3 y F5):
+    //   Paso 1 -> el backend genera un challenge_id de un solo uso (TTL 10 min).
+    //   Paso 2 -> hay que escribir el slug EXACTO del tenant; responde 202 + job_id.
+    // El borrado real es asincrono, asi que se hace polling del job.
+    async hardDeleteTenant(id) {
+        const tenantId = document.getElementById('tenant-delete-id');
+        const elName = document.getElementById('tenant-delete-name');
+        const elSlug = document.getElementById('tenant-delete-slug');
+        const elReason = document.getElementById('tenant-delete-reason');
+        const elConfirm = document.getElementById('tenant-delete-confirm');
+        const elChallenge = document.getElementById('tenant-delete-challenge');
+        const step1 = document.getElementById('tenant-delete-step1');
+        const step2 = document.getElementById('tenant-delete-step2');
+        if (!tenantId || !step1 || !step2) return;
+
+        let tenant;
         try {
-            const res = await fetch(`/api/v1/admin/tenants/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
-            if (res.ok) this.loadTenantsAdmin();
-            else alert("Error al eliminar tenant.");
-        } catch (e) {
-            console.error(e);
-            alert("Error de red al eliminar tenant.");
+            tenant = (await api.fetchAdminTenants()).find((t) => String(t.id) === String(id));
+        } catch (err) {
+            console.error(err);
+            alert("No se pudo leer el tenant: " + (err.message || err));
+            return;
+        }
+        if (!tenant) {
+            alert("El tenant ya no existe.");
+            this.loadTenantsAdmin();
+            return;
+        }
+        if (!tenant.slug) {
+            alert("Este tenant no tiene slug, asi que no se puede hard-deletar desde la UI.");
+            return;
+        }
+
+        tenantId.value = tenant.id;
+        elName.textContent = tenant.name;
+        elSlug.textContent = tenant.slug;
+        elReason.value = `Hard-delete desde la UI (${tenant.name})`;
+        elConfirm.value = '';
+        elChallenge.value = '';
+        step1.classList.remove('hidden');
+        step2.classList.add('hidden');
+        ui.toggleModal('modal-tenant-delete', true);
+    },
+
+    async tenantDeleteStep1() {
+        const id = document.getElementById('tenant-delete-id')?.value;
+        const reason = document.getElementById('tenant-delete-reason')?.value;
+        if (!id) return;
+
+        const btn = document.getElementById('btn-tenant-delete-step1');
+        btn.disabled = true;
+        btn.textContent = 'Generando challenge...';
+        try {
+            const ch = await api.deleteTenantConfirm1(id, reason);
+            document.getElementById('tenant-delete-challenge').value = ch.challenge_id;
+            document.getElementById('tenant-delete-challenge-label').textContent = ch.challenge_id;
+            document.getElementById('tenant-delete-step1').classList.add('hidden');
+            document.getElementById('tenant-delete-step2').classList.remove('hidden');
+            document.getElementById('tenant-delete-confirm')?.focus();
+        } catch (err) {
+            console.error(err);
+            alert("Paso 1 fallido: " + (err.message || err));
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Paso 1 · Generar challenge';
+        }
+    },
+
+    async tenantDeleteStep2() {
+        const id = document.getElementById('tenant-delete-id')?.value;
+        const challengeId = document.getElementById('tenant-delete-challenge')?.value;
+        const slug = document.getElementById('tenant-delete-slug')?.textContent.trim();
+        const typed = document.getElementById('tenant-delete-confirm')?.value ?? '';
+        if (!id || !challengeId) return;
+
+        if (typed !== slug) {
+            alert("El texto escrito no coincide con el slug del tenant. No se ha eliminado nada.");
+            return;
+        }
+
+        const btn = document.getElementById('btn-tenant-delete-step2');
+        btn.disabled = true;
+        btn.textContent = 'Enviando...';
+        let accepted;
+        try {
+            accepted = await api.deleteTenantConfirm2(id, challengeId, typed);
+        } catch (err) {
+            console.error(err);
+            alert("Paso 2 fallido: " + (err.message || err));
+            btn.disabled = false;
+            btn.textContent = 'Paso 2 · Eliminar definitivamente';
+            return;
+        }
+
+        const jobId = accepted.job_id;
+        if (!jobId) {
+            alert("El backend no devolvió un job_id.");
+            ui.toggleModal('modal-tenant-delete', false);
+            this.loadTenantsAdmin();
+            return;
+        }
+        state.trackJob(jobId, 'tenant_delete');
+        btn.textContent = 'Eliminando...';
+        alert(`Eliminación en curso (job ${jobId}). Se actualizará el listado al terminar.`);
+        ui.toggleModal('modal-tenant-delete', false);
+        this.loadTenantsAdmin();
+
+        try {
+            const job = await pollJob(jobId);
+            if (job.status === 'succeeded') {
+                alert("Tenant eliminado.");
+            } else {
+                alert(`Eliminación finalizada con estado '${job.status}'` +
+                    (job.error_code ? ` (${job.error_code})` : '') + ".");
+            }
+        } catch (err) {
+            console.error(err);
+            alert("No se pudo seguir el job de eliminación: " + (err.message || err));
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Paso 2 · Eliminar definitivamente';
+            this.loadTenantsAdmin();
+        }
+    },
+
+    // --- Editor de reglas vmalert por tenant (specs/011 F5) ---
+
+    async openVmalertRulesModal(id, slug) {
+        const tenantId = document.getElementById('vmalert-rules-tenant-id');
+        const area = document.getElementById('vmalert-rules-yaml');
+        const status = document.getElementById('vmalert-rules-status');
+        if (!tenantId || !area) return;
+
+        tenantId.value = id;
+        document.getElementById('vmalert-rules-tenant').textContent = slug || id;
+        document.getElementById('vmalert-rules-path').textContent =
+            `/opt/anomalia/vmalert-rules/${slug}/alert_rules.yml`;
+        status.textContent = 'Cargando reglas...';
+        area.value = '';
+        ui.toggleModal('modal-vmalert-rules', true);
+
+        // Initialize AI Chat for vmalert rules
+        this.initVmalertAIChat(id);
+
+        try {
+            const data = await api.getTenantVmalertRules(id);
+            area.value = data.yaml || '';
+            status.textContent = data.yaml
+                ? 'Reglas cargadas. Recuerda validar el YAML antes de recargar.'
+                : 'El tenant todavia no tiene archivo de reglas.';
+        } catch (err) {
+            console.error(err);
+            status.textContent = `No se pudieron cargar las reglas: ${err.message || err}`;
+        }
+    },
+
+    initVmalertAIChat(tenantId) {
+        const messagesContainer = document.getElementById('ai-chat-messages');
+        const input = document.getElementById('ai-chat-input');
+        const sendBtn = document.getElementById('btn-ai-chat-send');
+        const closeBtn = document.getElementById('btn-ai-chat-close');
+        
+        if (!messagesContainer || !input || !sendBtn) return;
+
+        // Clear previous messages
+        messagesContainer.innerHTML = '';
+        
+        // Add welcome message
+        this.addAIMessage(messagesContainer, 
+            '¡Hola! Soy tu asistente para reglas vmalert/PromQL. '
+            'Puedo ayudarte con sintaxis PromQL, funciones de agregación, '
+            'expresiones de alerta, labels/annotations, y buenas prácticas. '
+            '¿En qué te ayudo?');
+
+        const sendMessage = async () => {
+            const text = input.value.trim();
+            if (!text) return;
+            
+            input.value = '';
+            input.disabled = true;
+            sendBtn.disabled = true;
+            
+            this.addUserMessage(messagesContainer, text);
+            
+            try {
+                const response = await api.aiChat({
+                    context: 'vmalert_rules',
+                    messages: [
+                        { role: 'user', content: text }
+                    ],
+                    tenant_id: tenantId
+                });
+                this.addAIMessage(messagesContainer, response.response);
+            } catch (err) {
+                this.addAIMessage(messagesContainer, `Error: ${err.message || err}`);
+            } finally {
+                input.disabled = false;
+                sendBtn.disabled = false;
+                input.focus();
+            }
+        };
+
+        sendBtn.onclick = sendMessage;
+        input.onkeydown = (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        };
+        
+        closeBtn.onclick = () => {
+            const chatPanel = document.querySelector('.md\\:w-1\\/3');
+            if (chatPanel) chatPanel.style.display = 'none';
+        };
+    },
+
+    addUserMessage(container, text) {
+        const div = document.createElement('div');
+        div.className = 'flex justify-end';
+        div.innerHTML = `
+            <div class="bg-primary/20 text-primary rounded-xl px-3 py-2 max-w-[85%] text-xs">
+                ${text}
+            </div>
+        `;
+        container.appendChild(div);
+        container.scrollTop = container.scrollHeight;
+    },
+
+    addAIMessage(container, text) {
+        const div = document.createElement('div');
+        div.className = 'flex justify-start';
+        div.innerHTML = `
+            <div class="dynamic-card border rounded-xl px-3 py-2 max-w-[85%] text-xs">
+                ${text}
+            </div>
+        `;
+        container.appendChild(div);
+        container.scrollTop = container.scrollHeight;
+    },
+
+    async saveVmalertRules(andReload) {
+        const id = document.getElementById('vmalert-rules-tenant-id')?.value;
+        const area = document.getElementById('vmalert-rules-yaml');
+        const status = document.getElementById('vmalert-rules-status');
+        if (!id || !area) return;
+
+        const btn = andReload
+            ? document.getElementById('btn-vmalert-rules-reload')
+            : document.getElementById('btn-vmalert-rules-save');
+        const original = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Guardando...';
+        status.textContent = 'Guardando reglas...';
+
+        try {
+            await api.saveTenantVmalertRules(id, area.value);
+            status.textContent = 'Reglas guardadas en el nodo.';
+            if (!andReload) return;
+
+            status.textContent = 'Reglas guardadas. Solicitando reload de vmalert...';
+            const job = await this.runVmalertReload(id, (j) => {
+                status.textContent = `Reload en curso · fase ${j.phase || '-'} · ${j.progress_pct || 0}%`;
+            });
+            status.textContent = job.status === 'succeeded'
+                ? 'Reload completado.'
+                : `Reload finalizado con estado '${job.status}'` +
+                  (job.error_code ? ` (${job.error_code})` : '') + ".";
+        } catch (err) {
+            console.error(err);
+            status.textContent = `Error: ${err.message || err}`;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = original;
+        }
+    },
+
+    // Recarga de vmalert por polling del job (specs/011 §5.3). Lo comparten el
+    // boton "Guardar y recargar" del editor y el boton "Reload" de la tarjeta.
+    async runVmalertReload(tenantId, onProgress) {
+        const accepted = await api.tenantVmalertAction(tenantId, 'reload');
+        const jobId = accepted.job_id;
+        if (!jobId) throw new Error('El backend no devolvió un job_id para el reload.');
+        state.trackJob(jobId, 'vmalert_reload');
+        return pollJob(jobId, onProgress);
+    },
+
+    // Boton "Reload" de la tarjeta Alerts (conf).
+    async reloadVmalert(tenantId, btn) {
+        if (!tenantId || !btn) return;
+        const original = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Recargando...';
+        try {
+            const job = await this.runVmalertReload(tenantId, (j) => {
+                btn.textContent = `Recargando · ${j.progress_pct || 0}%`;
+            });
+            alert(job.status === 'succeeded'
+                ? 'vmalert recargado correctamente.'
+                : `Reload finalizado con estado '${job.status}'` +
+                  (job.error_code ? ` (${job.error_code})` : '') + '.');
+        } catch (err) {
+            console.error('Error recargando vmalert:', err);
+            alert('No se pudo recargar vmalert: ' + (err.message || err));
+        } finally {
+            btn.disabled = false;
+            btn.textContent = original;
         }
     },
 

@@ -1,9 +1,10 @@
 from typing import Any, Dict, List, Optional
+from enum import Enum
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 
-from .auth import verify_admin_token
+from .auth import verify_admin_token, verify_any_user_token
 from .database import get_db_connection
 from .ai_providers import (
     AI_PROVIDER_CATALOG,
@@ -18,6 +19,113 @@ from .ai_providers import (
 router = APIRouter(prefix="/api/v1/ai", tags=["AI Providers"])
 
 TEST_PROMPT = "Responde únicamente con la palabra OK."
+
+
+class ChatContext(str, Enum):
+    VMALET_RULES = "vmalert_rules"
+    VICTORIA_METRICS_QUERY = "victoria_metrics_query"
+    VICTORIA_LOGS_QUERY = "victoria_logs_query"
+    VICTORIA_TRACES_QUERY = "victoria_traces_query"
+    PYROSCOPE_QUERY = "pyroscope_query"
+    PARSES_QUERY = "parses_query"
+
+
+class ChatMessage(BaseModel):
+    role: str  # "user" | "assistant" | "system"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    context: ChatContext
+    messages: List[ChatMessage]
+    tenant_id: Optional[int] = None  # Required for vmalert_rules context
+
+
+class ChatResponse(BaseModel):
+    response: str
+    context: ChatContext
+
+
+# System prompts per context - STRICTLY limited to prevent injection
+SYSTEM_PROMPTS = {
+    ChatContext.VMALET_RULES: (
+        "Sos un experto en vmalert y Prometheus Alerting Rules. "
+        "SOLO podés responder preguntas relacionadas con:\n"
+        "- Sintaxis de reglas de alerta vmalert/PromQL\n"
+        "- Funciones de agregación (rate, increase, sum, avg, max, min, etc.)\n"
+        "- Expresiones de alerta (expr, for, labels, annotations)\n"
+        "- Buenas prácticas de alerting (umbrales, duración, severidad)\n"
+        "- Métricas comunes de VictoriaMetrics/VictoriaLogs/VictoriaTraces/Pyroscope\n\n"
+        "REGLAS ESTRICTAS:\n"
+        "1. NO respondas nada que no sea sobre reglas de alerta vmalert/PromQL\n"
+        "2. NO generes código que no sea reglas de alerta\n"
+        "3. NO expliques conceptos fuera del alerting\n"
+        "4. Si la pregunta no es sobre reglas de alerta, respondé: 'Solo puedo ayudarte con reglas de alerta vmalert/PromQL.'\n"
+        "5. Tus respuestas deben ser concisas y técnicas\n"
+    ),
+    ChatContext.VICTORIA_METRICS_QUERY: (
+        "Sos un experto en consultas PromQL para VictoriaMetrics. "
+        "SOLO podés responder preguntas relacionadas con:\n"
+        "- Sintaxis PromQL (selectores, operadores, funciones)\n"
+        "- Funciones de agregación y transformación\n"
+        "- Consultas de métricas, histogramas, summaries\n"
+        "- Dashboards y graficas en VictoriaMetrics\n\n"
+        "REGLAS ESTRICTAS:\n"
+        "1. NO respondas nada que no sea sobre consultas PromQL/VictoriaMetrics\n"
+        "2. NO generes código que no sea PromQL\n"
+        "3. Si la pregunta no es sobre consultas VictoriaMetrics, respondé: 'Solo puedo ayudarte con consultas PromQL para VictoriaMetrics.'\n"
+    ),
+    ChatContext.VICTORIA_LOGS_QUERY: (
+        "Sos un experto en consultas LogsQL para VictoriaLogs. "
+        "SOLO podés responder preguntas relacionadas con:\n"
+        "- Sintaxis LogsQL (filtros, pipes, operadores)\n"
+        "- Búsqueda de logs, parsing, extracción de campos\n"
+        "- Agregaciones sobre logs (count, stats, facets)\n"
+        "- Dashboards de logs en VictoriaLogs\n\n"
+        "REGLAS ESTRICTAS:\n"
+        "1. NO respondas nada que no sea sobre consultas LogsQL/VictoriaLogs\n"
+        "2. NO generes código que no sea LogsQL\n"
+        "3. Si la pregunta no es sobre consultas VictoriaLogs, respondé: 'Solo puedo ayudarte con consultas LogsQL para VictoriaLogs.'\n"
+    ),
+    ChatContext.VICTORIA_TRACES_QUERY: (
+        "Sos un experto en consultas de trazas para VictoriaTraces/Jaeger. "
+        "SOLO podés responder preguntas relacionadas con:\n"
+        "- API de trazas (servicios, operaciones, spans)\n"
+        "- Búsqueda de trazas por tags, duración, errores\n"
+        "- Análisis de latencia y dependencias\n\n"
+        "REGLAS ESTRICTAS:\n"
+        "1. NO respondas nada que no sea sobre consultas de trazas VictoriaTraces\n"
+        "2. Si la pregunta no es sobre trazas, respondé: 'Solo puedo ayudarte con consultas de trazas VictoriaTraces.'\n"
+    ),
+    ChatContext.PYROSCOPE_QUERY: (
+        "Sos un experto en profiling continuo con Pyroscope. "
+        "SOLO podés responder preguntas relacionadas con:\n"
+        "- Consultas de perfilado CPU/memoria\n"
+        "- Flamegraphs, comparativas, diff\n"
+        "- Análisis de cuellos de botella\n\n"
+        "REGLAS ESTRICTAS:\n"
+        "1. NO respondas nada que no sea sobre profiling Pyroscope\n"
+        "3. Si la pregunta no es sobre profiling, respondé: 'Solo puedo ayudarte con profiling Pyroscope.'\n"
+    ),
+    ChatContext.PARSES_QUERY: (
+        "Sos un experto en dashboards y consultas en Parses/Perses. "
+        "SOLO podés responder preguntas relacionadas con:\n"
+        "- Creación de dashboards en Parses/Perses\n"
+        "- Paneles: Time series, Table, Logs, Traces, Flamegraph\n"
+        "- Datasources: VictoriaMetrics, VictoriaLogs, VictoriaTraces, Pyroscope\n"
+        "- Variables, templating, linking\n\n"
+        "REGLAS ESTRICTAS:\n"
+        "1. NO respondas nada que no sea sobre dashboards/consultas Parses\n"
+        "2. Si la pregunta no es sobre Parses, respondé: 'Solo puedo ayudarte con dashboards y consultas en Parses.'\n"
+    ),
+}
+
+
+def _build_chat_prompt(context: ChatContext, messages: List[ChatMessage]) -> str:
+    """Build the full prompt with system prompt + conversation history."""
+    system = SYSTEM_PROMPTS[context]
+    conversation = "\n".join([f"{m.role.upper()}: {m.content}" for m in messages])
+    return f"{system}\n\nCONVERSACIÓN:\n{conversation}\n\nASSISTANT:"
 
 
 class AIConfigPayload(BaseModel):
@@ -124,3 +232,35 @@ def list_gemini_models(admin_payload: dict = Depends(verify_admin_token)) -> Dic
     if current not in models:
         models.insert(0, current)
     return {"models": models, "current": current}
+
+
+@router.post("/chat", response_model=ChatResponse, dependencies=[Depends(verify_any_user_token)])
+def chat(payload: ChatRequest, user_payload: dict = Depends(verify_any_user_token)) -> ChatResponse:
+    """Chat endpoint with strict context restriction.
+    
+    - vmalert_rules: requires tenant_id, only answers about vmalert/PromQL rules
+    - victoria_metrics_query: only PromQL queries for VictoriaMetrics
+    - victoria_logs_query: only LogsQL queries for VictoriaLogs
+    - victoria_traces_query: only trace queries for VictoriaTraces
+    - pyroscope_query: only profiling queries for Pyroscope
+    - parses_query: only dashboard/query questions for Parses/Perses
+    """
+    # Validate context-specific requirements
+    if payload.context == ChatContext.VMALET_RULES and not payload.tenant_id:
+        raise HTTPException(status_code=400, detail="tenant_id es requerido para contexto vmalert_rules")
+    
+    # Verify tenant access for vmalert_rules
+    if payload.context == ChatContext.VMALET_RULES:
+        from .auth import verify_tenant_access
+        # This will raise 403 if user doesn't have access to the tenant
+        verify_tenant_access(payload.tenant_id)(user_payload)
+    
+    provider = get_provider()
+    prompt = _build_chat_prompt(payload.context, payload.messages)
+    
+    try:
+        response = provider.generate(prompt)
+    except AIProviderError as e:
+        raise HTTPException(status_code=502, detail=f"Error del proveedor de IA: {str(e)}")
+    
+    return ChatResponse(response=response, context=payload.context)

@@ -36,11 +36,32 @@ CREATE TABLE IF NOT EXISTS tenants (
     environment VARCHAR(50),                -- Ej: 'work', 'live', 'play', 'default'
     port INTEGER DEFAULT 8427,              -- Puerto de escucha del servicio (ej: vmauth, vm, vlogs, pyroscope)
     description TEXT,
+    -- Identidad estable del tenant (spec 011). slug es kebab-case, único e
+    -- inmutable tras la creación; da nombre a la unidad systemd del vmalert
+    -- (anomalia-vmalert-<slug>.service) y al directorio de reglas.
+    slug VARCHAR(100) UNIQUE,
+    display_name VARCHAR(150),
+    -- Nodo que aloja la instancia vmalert 1:1 del tenant. La FK se añade al
+    -- final del script (bloque 8c) porque infrastructure_nodes se crea después.
+    instance_id INTEGER,
+    vmalert_node_id INTEGER,
+    vmalert_port INTEGER,
+    has_alerts BOOLEAN DEFAULT FALSE,
+    placement_mode VARCHAR(10) DEFAULT 'manual' CHECK (placement_mode IN ('manual','auto')),
+    status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('provisioning','active','deleting','error','deleted_cleanup')),
+    org_id_upper VARCHAR(100) UNIQUE,       -- Valor de X-Scope-OrgID, derivado del slug en UPPER
     -- Marca el tenant cuya telemetría es pista de auditoría. No basta con el
     -- type ('logs'): AUDIT_LOGS también es de tipo logs y sin esta bandera
     -- aparecía duplicado en la pestaña Logs y ausente de la de Auditoría.
     is_audit BOOLEAN NOT NULL DEFAULT false,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    -- Hard-delete explícito en 2 pasos: deleted_at marca el borrado lógico y
+    -- deletion_* la evidencia de las dos confirmaciones.
+    deleted_at TIMESTAMP,
+    deletion_confirmed_at TIMESTAMP,
+    deletion_confirmed_by INTEGER,
+    deletion_challenge_id VARCHAR(64),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- 4.1 Tabla que define el endpoint de LECTURA de cada tenant (base de los datasources de Perses).
@@ -76,6 +97,8 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tenants_account_project_active ON tenants(account_id, project_id) WHERE status='active' AND deleted_at IS NULL;
+
 -- 7. Tabla intermedia para permitir múltiples roles por usuario (N a M)
 CREATE TABLE IF NOT EXISTS user_roles (
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -93,6 +116,74 @@ CREATE TABLE IF NOT EXISTS user_tenants (
 
 -- Índices de acceso a tenants por usuario
 CREATE INDEX IF NOT EXISTS idx_user_tenants_user_id ON user_tenants(user_id);
+
+-- 8b. Tablas para ciclo de vida vmalert por tenant + jobs + puertos + auditoría (spec 011)
+
+CREATE TABLE IF NOT EXISTS tenant_vmalert_instances (
+    id SERIAL PRIMARY KEY,
+    tenant_id INTEGER UNIQUE NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    instance_id INTEGER NOT NULL,          -- FK añadida en el bloque 8c
+    port INTEGER NOT NULL,
+    service VARCHAR(20) DEFAULT 'vmalert',
+    unit_name VARCHAR(150) NOT NULL,
+    rules_path VARCHAR(255) NOT NULL,
+    status VARCHAR(20) DEFAULT 'deployed' CHECK (status IN ('creating','deploying','deployed','error','stopped','undeployed')),
+    health VARCHAR(10) DEFAULT 'unknown' CHECK (health IN ('ok','degraded','down','unknown')),
+    last_deployed_at TIMESTAMP,
+    enabled BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_tvi_instance_port UNIQUE (instance_id, port)
+);
+
+CREATE TABLE IF NOT EXISTS port_mapping (
+    id SERIAL PRIMARY KEY,
+    instance_id INTEGER NOT NULL,          -- FK añadida en el bloque 8c
+    tenant_id INTEGER REFERENCES tenants(id) ON DELETE SET NULL,
+    service VARCHAR(20),
+    host_port INTEGER NOT NULL,
+    container_port INTEGER,
+    proto VARCHAR(5) DEFAULT 'tcp',
+    purpose VARCHAR(50),
+    expires_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_portmap_instance_host UNIQUE (instance_id, host_port)
+);
+
+CREATE TABLE IF NOT EXISTS audit_deletions (
+    id SERIAL PRIMARY KEY,
+    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+    actor INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    reason TEXT,
+    ip VARCHAR(45),
+    user_agent VARCHAR(255),
+    challenge_id VARCHAR(64) NOT NULL UNIQUE,
+    confirm_step1_at TIMESTAMP,
+    confirm_step2_at TIMESTAMP,
+    outcome VARCHAR(15) DEFAULT 'pending' CHECK (outcome IN ('pending','completed','expired','cancelled')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS job_state (
+    id VARCHAR(36) PRIMARY KEY,
+    type VARCHAR(30),
+    ref_id INTEGER,
+    status VARCHAR(12) DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','failed','cancelled')),
+    phase VARCHAR(30),
+    progress_pct INTEGER DEFAULT 0,
+    logs_ref VARCHAR(255),
+    error_code VARCHAR(50),
+    result JSONB,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    started_at TIMESTAMP,
+    finished_at TIMESTAMP,
+    timeout_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_job_state_type_status ON job_state(type, status);
+CREATE INDEX IF NOT EXISTS idx_job_state_ref_id ON job_state(ref_id);
+CREATE INDEX IF NOT EXISTS idx_job_state_created_at ON job_state(created_at);
+
 
 -- 9. Crear tabla de sesiones para validación por session_id
 CREATE TABLE IF NOT EXISTS sessions (
@@ -116,7 +207,9 @@ CREATE TABLE IF NOT EXISTS ui_tickets (
     id SERIAL PRIMARY KEY,
     ticket VARCHAR(128) UNIQUE NOT NULL,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    -- NULL para el scope 'alertmanager_global': es la unica consola sin tenant
+    -- (UI de administracion global). Ver specs/011 §5.7.
+    tenant_id INTEGER REFERENCES tenants(id) ON DELETE CASCADE,
     -- Alcance de la tarjeta que emitio el ticket (UI_SCOPE_PROFILE). Determina el
     -- upstream al que se monta la consola: los scopes de Victoria van a su UI,
     -- "dashboards" va a Parses. Ver specs/010.
@@ -230,18 +323,27 @@ WHERE r.name = 'approvers' AND p.code = 'approvers'
   );
 
 -- Insertar tenants sincronizados exactamente con vmauth.yml.j2
-INSERT INTO tenants (name, type, account_id, project_id, environment, port, description, is_audit) VALUES 
-('METRICS', 'metrics', 0, 0, 'default', 8400, 'Tenant para métricas de infraestructura (VictoriaMetrics - vminsert)', false),
-('TRACES', 'traces', 0, 1, 'default', 8490, 'Tenant para trazas distribuidas OTLP (VictoriaTraces - vtinsert)', false),
-('PROFILES', 'profiles', NULL, NULL, 'default', 4040, 'Tenant de perfilado continuo vía Pyroscope (X-Scope-OrgID: PROFILES)', false),
-('AUDIT_LOGS', 'logs', 0, 3, 'default', 8480, 'Tenant para logs de auditoría (VictoriaLogs - vlinsert)', true)
+-- spec 011: el slug es la identidad estable del tenant. Sin el, el paso 2 del
+-- hard-delete (confirm_text == tenants.slug) seria imposible de satisfacer en
+-- los tenants sembrados aqui, y el nombre de la unidad systemd
+-- anomalia-vmalert-<slug>.service quedaria indefinido.
+INSERT INTO tenants (name, slug, display_name, org_id_upper, type, account_id, project_id, environment, port, description, is_audit) VALUES 
+('METRICS', 'metrics', 'METRICS', 'METRICS', 'metrics', 0, 0, 'default', 8400, 'Tenant para métricas de infraestructura (VictoriaMetrics - vminsert)', false),
+('TRACES', 'traces', 'TRACES', 'TRACES', 'traces', 0, 1, 'default', 8490, 'Tenant para trazas distribuidas OTLP (VictoriaTraces - vtinsert)', false),
+('PROFILES', 'profiles', 'PROFILES', 'PROFILES', 'profiles', NULL, NULL, 'default', 4040, 'Tenant de perfilado continuo vía Pyroscope (X-Scope-OrgID: PROFILES)', false),
+('AUDIT_LOGS', 'audit-logs', 'AUDIT_LOGS', 'AUDIT-LOGS', 'logs', 0, 3, 'default', 8480, 'Tenant para logs de auditoría (VictoriaLogs - vlinsert)', true)
 ON CONFLICT (name) DO UPDATE SET 
     type = EXCLUDED.type,
     account_id = EXCLUDED.account_id,
     project_id = EXCLUDED.project_id,
     port = EXCLUDED.port,
     description = EXCLUDED.description,
-    is_audit = EXCLUDED.is_audit;
+    is_audit = EXCLUDED.is_audit,
+    -- Backfill idempotente: solo rellena los NULL de instalaciones previas a
+    -- la spec 011, nunca pisa un slug ya establecido (es inmutable).
+    slug = COALESCE(tenants.slug, EXCLUDED.slug),
+    display_name = COALESCE(tenants.display_name, EXCLUDED.display_name),
+    org_id_upper = COALESCE(tenants.org_id_upper, EXCLUDED.org_id_upper);
 
 -- Definir el endpoint de lectura de cada tenant a partir de los nodos select del inventario.
 -- El tenant se empareja por nombre, de modo que el seed es idempotente y sobrevive a un
@@ -329,14 +431,48 @@ CREATE TABLE IF NOT EXISTS infrastructure_nodes (
     component_type VARCHAR(50) NOT NULL DEFAULT 'auth',
     port INTEGER DEFAULT 8427,
     admin_username VARCHAR(100) DEFAULT 'anomalia', -- Usuario de administración/soporte en el nodo
-    admin_password TEXT,                            -- Contraseña en texto plano del usuario de soporte generada por OpenSSL
+    admin_password TEXT,                  -- Contraseña en texto plano del usuario de soporte generada por OpenSSL
     status VARCHAR(50) DEFAULT 'operational',
     is_active BOOLEAN DEFAULT TRUE,
     description TEXT,
+    -- ABM multi-tenant (spec 011): roles que el nodo puede hospedar, pool de
+    -- puertos JSONB para los servicios con puerto dinámico y balanceo por
+    -- menor número de instancias activas (tenants_count_active denormalizado).
+    roles VARCHAR(255),
+    ports_pool JSONB,
+    capacity_slots INTEGER DEFAULT 10,
+    tenants_count_active INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
     CONSTRAINT unique_host_component UNIQUE (hostname, component_type)
 );
+
+-- 8c. Claves foráneas diferidas (spec 011). Los REFERENCES en línea no son
+-- posibles: tenants (bloque 4) se crea antes que users (bloque 5) y las tablas
+-- 8b antes que infrastructure_nodes. Se añaden aquí, de forma idempotente.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_tenants_instance_id') THEN
+        ALTER TABLE tenants ADD CONSTRAINT fk_tenants_instance_id
+            FOREIGN KEY (instance_id) REFERENCES infrastructure_nodes(id) ON DELETE SET NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_tenants_vmalert_node_id') THEN
+        ALTER TABLE tenants ADD CONSTRAINT fk_tenants_vmalert_node_id
+            FOREIGN KEY (vmalert_node_id) REFERENCES infrastructure_nodes(id) ON DELETE SET NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_tenants_deletion_confirmed_by') THEN
+        ALTER TABLE tenants ADD CONSTRAINT fk_tenants_deletion_confirmed_by
+            FOREIGN KEY (deletion_confirmed_by) REFERENCES users(id) ON DELETE SET NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_tvi_instance_id') THEN
+        ALTER TABLE tenant_vmalert_instances ADD CONSTRAINT fk_tvi_instance_id
+            FOREIGN KEY (instance_id) REFERENCES infrastructure_nodes(id) ON DELETE RESTRICT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_portmap_instance_id') THEN
+        ALTER TABLE port_mapping ADD CONSTRAINT fk_portmap_instance_id
+            FOREIGN KEY (instance_id) REFERENCES infrastructure_nodes(id) ON DELETE RESTRICT;
+    END IF;
+END $$;
 
 -- Crear tabla para la configuración dinámica de Proveedores de Identidad (IdP / OIDC)
 CREATE TABLE IF NOT EXISTS oidc_providers (

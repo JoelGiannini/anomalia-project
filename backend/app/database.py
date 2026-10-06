@@ -79,13 +79,28 @@ def init_db(hash_password_func):
             CREATE TABLE IF NOT EXISTS tenants (
                 id SERIAL PRIMARY KEY,
                 name VARCHAR(100) UNIQUE NOT NULL,
+                slug VARCHAR(100) UNIQUE,
+                display_name VARCHAR(150),
                 type VARCHAR(50) DEFAULT 'metrics',
                 account_id INTEGER,
                 project_id INTEGER,
                 environment VARCHAR(50),
                 port INTEGER DEFAULT 8427,
                 description TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                instance_id INTEGER,
+                vmalert_node_id INTEGER,
+                vmalert_port INTEGER,
+                has_alerts BOOLEAN DEFAULT FALSE,
+                placement_mode VARCHAR(10) DEFAULT 'manual' CHECK (placement_mode IN ('manual','auto')),
+                status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('provisioning','active','deleting','error','deleted_cleanup')),
+                org_id_upper VARCHAR(100) UNIQUE,
+                is_audit BOOLEAN DEFAULT FALSE,
+                deleted_at TIMESTAMP,
+                deletion_confirmed_at TIMESTAMP,
+                deletion_confirmed_by INTEGER,
+                deletion_challenge_id VARCHAR(64),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
 
@@ -102,6 +117,101 @@ def init_db(hash_password_func):
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
+
+        # Sequences for auto-generating account_id and project_id
+        cursor.execute("CREATE SEQUENCE IF NOT EXISTS tenant_account_id_seq START 1000;")
+        cursor.execute("CREATE SEQUENCE IF NOT EXISTS tenant_project_id_seq START 1000;")
+
+        cursor.execute("""CREATE UNIQUE INDEX IF NOT EXISTS uq_tenants_account_project_active ON tenants(account_id, project_id) WHERE status='active' AND deleted_at IS NULL;""")
+
+        # Tickets de un solo uso que authorizes el montaje de una consola de
+        # telemetria (specs/010). tenant_id es NULL para el scope
+        # 'alertmanager_global', la unica consola sin tenant (specs/011 5.7).
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ui_tickets (
+                id SERIAL PRIMARY KEY,
+                ticket VARCHAR(128) UNIQUE NOT NULL,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                tenant_id INTEGER REFERENCES tenants(id) ON DELETE CASCADE,
+                scope VARCHAR(32) NOT NULL DEFAULT 'metrics',
+                expires_at TIMESTAMP NOT NULL,
+                consumed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tenant_vmalert_instances (
+                id SERIAL PRIMARY KEY,
+                tenant_id INTEGER UNIQUE NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                instance_id INTEGER NOT NULL,
+                port INTEGER NOT NULL,
+                service VARCHAR(20) DEFAULT 'vmalert',
+                unit_name VARCHAR(150) NOT NULL,
+                rules_path VARCHAR(255) NOT NULL,
+                status VARCHAR(20) DEFAULT 'deployed' CHECK (status IN ('creating','deploying','deployed','error','stopped','undeployed')),
+                health VARCHAR(10) DEFAULT 'unknown' CHECK (health IN ('ok','degraded','down','unknown')),
+                last_deployed_at TIMESTAMP,
+                enabled BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_tvi_instance_port UNIQUE (instance_id, port)
+            );
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS port_mapping (
+                id SERIAL PRIMARY KEY,
+                instance_id INTEGER NOT NULL,
+                tenant_id INTEGER REFERENCES tenants(id) ON DELETE SET NULL,
+                service VARCHAR(20),
+                host_port INTEGER NOT NULL,
+                container_port INTEGER,
+                proto VARCHAR(5) DEFAULT 'tcp',
+                purpose VARCHAR(50),
+                expires_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS audit_deletions (
+                id SERIAL PRIMARY KEY,
+                tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+                actor INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                reason TEXT,
+                ip VARCHAR(45),
+                user_agent VARCHAR(255),
+                challenge_id VARCHAR(64) NOT NULL UNIQUE,
+                confirm_step1_at TIMESTAMP,
+                confirm_step2_at TIMESTAMP,
+                outcome VARCHAR(15) DEFAULT 'pending' CHECK (outcome IN ('pending','completed','expired','cancelled')),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS job_state (
+                id VARCHAR(36) PRIMARY KEY,
+                type VARCHAR(30),
+                ref_id INTEGER,
+                status VARCHAR(12) DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','failed','cancelled')),
+                phase VARCHAR(30),
+                progress_pct INTEGER DEFAULT 0,
+                logs_ref VARCHAR(255),
+                error_code VARCHAR(50),
+                result JSONB,
+                created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                started_at TIMESTAMP,
+                finished_at TIMESTAMP,
+                timeout_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_job_state_type_status ON job_state(type, status);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_job_state_ref_id ON job_state(ref_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_job_state_created_at ON job_state(created_at);")
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS user_roles (
@@ -173,10 +283,43 @@ def init_db(hash_password_func):
                 port INTEGER DEFAULT 8427,
                 status VARCHAR(50) DEFAULT 'operational',
                 description TEXT,
+                roles VARCHAR(255),
+                ports_pool JSONB,
+                capacity_slots INTEGER DEFAULT 10,
+                tenants_count_active INTEGER DEFAULT 0,
                 is_active BOOLEAN DEFAULT TRUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+        """)
+
+        # Claves foráneas diferidas (spec 011). Los REFERENCES en línea no son
+        # posibles: tenants se crea antes que users y las tablas del ciclo de
+        # vida de vmalert antes que infrastructure_nodes. Idempotente.
+        cursor.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_tenants_instance_id') THEN
+                    ALTER TABLE tenants ADD CONSTRAINT fk_tenants_instance_id
+                        FOREIGN KEY (instance_id) REFERENCES infrastructure_nodes(id) ON DELETE SET NULL;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_tenants_vmalert_node_id') THEN
+                    ALTER TABLE tenants ADD CONSTRAINT fk_tenants_vmalert_node_id
+                        FOREIGN KEY (vmalert_node_id) REFERENCES infrastructure_nodes(id) ON DELETE SET NULL;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_tenants_deletion_confirmed_by') THEN
+                    ALTER TABLE tenants ADD CONSTRAINT fk_tenants_deletion_confirmed_by
+                        FOREIGN KEY (deletion_confirmed_by) REFERENCES users(id) ON DELETE SET NULL;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_tvi_instance_id') THEN
+                    ALTER TABLE tenant_vmalert_instances ADD CONSTRAINT fk_tvi_instance_id
+                        FOREIGN KEY (instance_id) REFERENCES infrastructure_nodes(id) ON DELETE RESTRICT;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_portmap_instance_id') THEN
+                    ALTER TABLE port_mapping ADD CONSTRAINT fk_portmap_instance_id
+                        FOREIGN KEY (instance_id) REFERENCES infrastructure_nodes(id) ON DELETE RESTRICT;
+                END IF;
+            END $$;
         """)
 
         cursor.execute("SELECT COUNT(*) FROM users;")

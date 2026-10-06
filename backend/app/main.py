@@ -4,6 +4,8 @@ import json
 import psutil
 import pyroscope
 import httpx
+import asyncio
+import contextlib
 from typing import Any, Awaitable, Callable
 from fastapi import FastAPI, Request, Response, Depends
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
@@ -26,9 +28,23 @@ from .database import init_db
 from .auth import hash_password, verify_any_user_token
 from .oidc import router as oidc_router
 from .ai_router import router as ai_router
-from .routers import auth_router, admin_router, infra_router, parses_router, ui_proxy_router
+from .routers import auth_router, admin_router, infra_router, parses_router, ui_proxy_router, webhook_router
+from .workers import TenantWorker, VmalertWorker
 
-app = FastAPI(title="Backend ABM - Alert Management")
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    tenant_worker = TenantWorker(interval=30)
+    vmalert_worker = VmalertWorker(interval=30)
+    await tenant_worker.start()
+    await vmalert_worker.start()
+    yield
+    # Shutdown
+    await tenant_worker.stop()
+    await vmalert_worker.stop()
+
+
+app = FastAPI(title="Backend ABM - Alert Management", lifespan=lifespan)
 
 # Directorios base para archivos estáticos y plantillas basados en la ubicación del script
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -229,6 +245,7 @@ app.include_router(admin_router.router)
 app.include_router(infra_router.router)
 app.include_router(parses_router.router)
 app.include_router(ui_proxy_router.router)
+app.include_router(webhook_router.router)
 
 # Estrategia de aislamiento en vmauth derivada del tipo de tenant.
 # metrics/traces/logs se aíslan por AccountID/ProjectID numéricos;

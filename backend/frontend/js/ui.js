@@ -1,3 +1,6 @@
+import { api } from './api.js';
+import { state, pollJob } from './state.js';
+
 // Consolas de telemetría accesibles desde el panel principal.
 //
 // Cada entrada indica el contenedor donde se pinta, el perfil que la habilita
@@ -129,6 +132,13 @@ export const ui = {
             activeBtn.classList.remove('border-transparent', 'opacity-70');
             activeBtn.classList.add('border-current', 'dynamic-text-accent');
         }
+
+        // Emit tab-changed event for AI assistant context switching
+        window.dispatchEvent(new CustomEvent('tab-changed', { detail: { tab: tabName } }));
+
+        // La tarjeta de consolas de alertas se pide solo al abrir su pestaña, para
+        // no gastar una llamada a /admin/tenants en cada carga del panel.
+        if (tabName === 'alerts') this.renderAlertsConfig();
     },
 
     switchAdminTab(adminTabName) {
@@ -254,6 +264,9 @@ export const ui = {
         if (hasProfile('infra_manager')) {
             html += `<button data-admintab="infra" id="admin-tab-btn-infra" class="admin-tab-btn w-full text-left px-3 py-2.5 rounded-xl text-sm font-medium flex items-center space-x-3 transition dynamic-card border border-transparent"><i class="fa-solid fa-server w-5 dynamic-text-accent"></i><span>Infraestructura</span></button>`;
         }
+        if (hasProfile('alerts_manager')) {
+            html += `<button data-admintab="alerts" id="admin-tab-btn-alerts" class="admin-tab-btn w-full text-left px-3 py-2.5 rounded-xl text-sm font-medium flex items-center space-x-3 transition dynamic-card border border-transparent"><i class="fa-solid fa-gear w-5 dynamic-text-accent"></i><span>Alerts (conf)</span></button>`;
+        }
         if (hasProfile('admin')) {
             html += `<button data-admintab="sso" id="admin-tab-btn-sso" class="admin-tab-btn w-full text-left px-3 py-2.5 rounded-xl text-sm font-medium flex items-center space-x-3 transition dynamic-card border border-transparent"><i class="fa-solid fa-key w-5 dynamic-text-accent"></i><span>SSO (OIDC)</span></button>`;
             html += `<button data-admintab="ai" id="admin-tab-btn-ai" class="admin-tab-btn w-full text-left px-3 py-2.5 rounded-xl text-sm font-medium flex items-center space-x-3 transition dynamic-card border border-transparent"><i class="fa-solid fa-brain w-5 dynamic-text-accent"></i><span>Proveedor IA</span></button>`;
@@ -268,5 +281,225 @@ export const ui = {
         if (menuContainer) {
             menuContainer.innerHTML = html;
         }
+    },
+
+    // Consolas de administración de alertas: vmalert por tenant y Alertmanager
+    // global. Ambas exigen el perfil 'alerts_manager' (specs/011 §5.7), que el
+    // backend vuelve a comprobar al emitir el ticket y en cada request del proxy.
+    async renderAlertsConfig() {
+        const container = document.getElementById('alerts-config-list');
+        if (!container) return;
+
+        const profiles = state.currentUserProfiles || [];
+        if (!profiles.includes('alerts_manager')) {
+            container.innerHTML =
+                '<p class="text-xs opacity-75">Requiere el perfil alerts_manager para administrar las consolas de alertas.</p>';
+            return;
+        }
+
+        container.innerHTML = '<p class="text-xs opacity-75">Cargando consolas de alertas...</p>';
+
+        let tenants = [];
+        try {
+            // Endpoint gated por alerts_manager: no exige tenants_manager.
+            tenants = await api.fetchAlertsTenants();
+        } catch (err) {
+            console.error('Error al cargar tenants para Alerts (conf):', err);
+            container.innerHTML =
+                `<p class="text-xs text-red-400">No se pudo cargar el listado de tenants: ${err.message || err}</p>`;
+            return;
+        }
+
+        // La consola vmalert solo existe si el backend puede resolver una
+        // instancia 'deployed' para ese tenant (vmalert_deployed); el botón de
+        // reglas no depende de eso, porque el archivo se puede preparar antes de
+        // desplegar la instancia.
+        const withInstance = tenants.filter((t) => t.status === 'active' && t.vmalert_deployed);
+        const withRules = tenants.filter((t) => t.status !== 'deleted_cleanup');
+
+        let html = `
+            <div class="dynamic-card border rounded-xl p-4 flex justify-between items-center">
+                <div>
+                    <h4 class="font-bold text-sm">Alertmanager (global)</h4>
+                    <p class="text-xs opacity-75">Consola unica del stack, sin tenant</p>
+                </div>
+                <button id="btn-open-alertmanager-global" class="text-xs dynamic-card border px-2 py-1 rounded">
+                    Abrir
+                </button>
+            </div>
+        `;
+
+        if (withInstance.length === 0) {
+            html += `
+                <p class="text-xs opacity-75">
+                    Ningun tenant tiene una instancia vmalert desplegada. Provisiona el tenant
+                    para que aparezca aqui su consola.
+                </p>
+            `;
+        }
+
+        for (const t of withRules) {
+            const deployed = t.status === 'active' && t.vmalert_deployed;
+            html += `
+                <div class="dynamic-card border rounded-xl p-4 flex justify-between items-center">
+                    <div>
+                        <h4 class="font-bold text-sm">${t.name}</h4>
+                        <p class="text-xs opacity-75">
+                            slug: ${t.slug || '-'} | org: ${t.org_id_upper || '-'} |
+                            estado: ${t.status || '-'} |
+                            nodo: ${t.instance_id || '-'} | puerto: ${t.vmalert_port || '-'}
+                        </p>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <button class="btn-vmalert-rules text-xs dynamic-card border px-2 py-1 rounded"
+                                data-tenant-id="${t.id}" data-tenant-slug="${t.slug || ''}">
+                            Reglas
+                        </button>
+                        <button class="btn-vmalert-reload text-xs dynamic-card border px-2 py-1 rounded"
+                                data-tenant-id="${t.id}" ${deployed ? '' : 'disabled title="Sin instancia desplegada"'}>
+                            Reload
+                        </button>
+                        <button class="btn-open-vmalert-tenant text-xs dynamic-card border px-2 py-1 rounded"
+                                data-tenant-id="${t.id}" ${deployed ? '' : 'disabled title="Sin instancia desplegada"'}>
+                            Abrir vmalert
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        container.innerHTML = html;
+
+        document.getElementById('btn-open-alertmanager-global')?.addEventListener('click', async () => {
+            try {
+                const url = await api.createAlertmanagerGlobalUiTicket();
+                window.open(url, '_blank');
+            } catch (err) {
+                console.error('Error abriendo la consola global de Alertmanager:', err);
+                alert('No se pudo abrir Alertmanager: ' + (err.message || err));
+            }
+        });
+
+        container.querySelectorAll('.btn-open-vmalert-tenant').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                const tenantId = btn.getAttribute('data-tenant-id');
+                try {
+                    const url = await api.createVmalertUiTicket(tenantId);
+                    window.open(url, '_blank');
+                } catch (err) {
+                    console.error('Error abriendo la consola vmalert del tenant:', err);
+                    alert('No se pudo abrir vmalert: ' + (err.message || err));
+                }
+            });
+        });
+        // Los botones Reglas/Reload se wirean por delegacion en main.js, sobre el
+        // contenedor estatico #alerts-config-list (mismo patron que btn-edit-tenant).
+    },
+
+    // Admin view version: usa ?mine=true para filtrar por tenants del usuario actual
+    // y renderiza en #admin-alerts-config-list
+    async renderAdminAlertsConfig() {
+        const container = document.getElementById('admin-alerts-config-list');
+        if (!container) return;
+
+        const profiles = state.currentUserProfiles || [];
+        if (!profiles.includes('alerts_manager')) {
+            container.innerHTML =
+                '<p class="text-xs opacity-75">Requiere el perfil alerts_manager para administrar las consolas de alertas.</p>';
+            return;
+        }
+
+        container.innerHTML = '<p class="text-xs opacity-75">Cargando consolas de alertas...</p>';
+
+        let tenants = [];
+        try {
+            // Usar ?mine=true para filtrar por tenants del usuario actual
+            tenants = await api.fetchAlertsTenants({ mine: true });
+        } catch (err) {
+            console.error('Error al cargar tenants para Admin Alerts (conf):', err);
+            container.innerHTML =
+                `<p class="text-xs text-red-400">No se pudo cargar el listado de tenants: ${err.message || err}</p>`;
+            return;
+        }
+
+        const withInstance = tenants.filter((t) => t.status === 'active' && t.vmalert_deployed);
+        const withRules = tenants.filter((t) => t.status !== 'deleted_cleanup');
+
+        let html = `
+            <div class="dynamic-card border rounded-xl p-4 flex justify-between items-center">
+                <div>
+                    <h4 class="font-bold text-sm">Alertmanager (global)</h4>
+                    <p class="text-xs opacity-75">Consola unica del stack, sin tenant</p>
+                </div>
+                <button id="btn-open-alertmanager-global-admin" class="text-xs dynamic-card border px-2 py-1 rounded">
+                    Abrir
+                </button>
+            </div>
+        `;
+
+        if (withInstance.length === 0) {
+            html += `
+                <p class="text-xs opacity-75">
+                    Ningun tenant tiene una instancia vmalert desplegada. Provisiona el tenant
+                    para que aparezca aqui su consola.
+                </p>
+            `;
+        }
+
+        for (const t of withRules) {
+            const deployed = t.status === 'active' && t.vmalert_deployed;
+            html += `
+                <div class="dynamic-card border rounded-xl p-4 flex justify-between items-center">
+                    <div>
+                        <h4 class="font-bold text-sm">${t.name}</h4>
+                        <p class="text-xs opacity-75">
+                            slug: ${t.slug || '-'} | org: ${t.org_id_upper || '-'} |
+                            estado: ${t.status || '-'} |
+                            nodo: ${t.instance_id || '-'} | puerto: ${t.vmalert_port || '-'}
+                        </p>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <button class="btn-vmalert-rules-admin text-xs dynamic-card border px-2 py-1 rounded"
+                                data-tenant-id="${t.id}" data-tenant-slug="${t.slug || ''}">
+                            Reglas
+                        </button>
+                        <button class="btn-vmalert-reload-admin text-xs dynamic-card border px-2 py-1 rounded"
+                                data-tenant-id="${t.id}" ${deployed ? '' : 'disabled title="Sin instancia desplegada"'}>
+                            Reload
+                        </button>
+                        <button class="btn-open-vmalert-tenant-admin text-xs dynamic-card border px-2 py-1 rounded"
+                                data-tenant-id="${t.id}" ${deployed ? '' : 'disabled title="Sin instancia desplegada"'}>
+                            Abrir vmalert
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        container.innerHTML = html;
+
+        document.getElementById('btn-open-alertmanager-global-admin')?.addEventListener('click', async () => {
+            try {
+                const url = await api.createAlertmanagerGlobalUiTicket();
+                window.open(url, '_blank');
+            } catch (err) {
+                console.error('Error abriendo la consola global de Alertmanager:', err);
+                alert('No se pudo abrir Alertmanager: ' + (err.message || err));
+            }
+        });
+
+        container.querySelectorAll('.btn-open-vmalert-tenant-admin').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                const tenantId = btn.getAttribute('data-tenant-id');
+                try {
+                    const url = await api.createVmalertUiTicket(tenantId);
+                    window.open(url, '_blank');
+                } catch (err) {
+                    console.error('Error abriendo la consola vmalert del tenant:', err);
+                    alert('No se pudo abrir vmalert: ' + (err.message || err));
+                }
+            });
+        });
+        // Los botones Reglas/Reload admin se wirean por delegacion en main.js
     }
 };

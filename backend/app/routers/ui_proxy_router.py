@@ -201,6 +201,8 @@ UI_SCOPE_PROFILE = {
     "profiling": "access_Continuous_Profiling",
     "dashboards": "access_dasboards",
     "audit": "audit",
+    "vmalert": "alerts_manager",
+    "alertmanager_global": "alerts_manager",
 }
 
 # ---------------------------------------------------------------------------
@@ -209,6 +211,17 @@ UI_SCOPE_PROFILE = {
 
 # Alcance cuyo upstream es Parses en vez de una UI de Victoria.
 PARSES_SCOPE = "dashboards"
+
+# Scopes de consola de administracion que se montan en la raiz del ticket, sin
+# scoping de Victoria: Parses, el vmalert del tenant y el Alertmanager global.
+# La consola queda en /ui/{ticket}/ y el proxy antepone el upstream resuelto.
+VMALERT_SCOPE = "vmalert"
+ALERTMANAGER_SCOPE = "alertmanager_global"
+ROOT_MOUNTED_SCOPES = {PARSES_SCOPE, VMALERT_SCOPE, ALERTMANAGER_SCOPE}
+
+# Scopes que son de solo lectura: la consola se abre para consultar, no para
+# escribir. Parses queda aparte porque si admite escritura (specs/010).
+ADMIN_CONSOLE_SCOPES = {VMALERT_SCOPE, ALERTMANAGER_SCOPE}
 
 # UI de Parses dentro de la red de Anomalia (el contenedor se llama "parses").
 PARSES_UI_URL = os.getenv("PARSES_UI_URL", "http://parses:8080").rstrip("/")
@@ -285,7 +298,10 @@ window.PERSES_APP_CONFIG = { api_prefix: "__PREFIX__" };
 
 
 class UITicketRequest(BaseModel):
-    tenant_id: int
+    # tenant_id es opcional: el scope 'alertmanager_global' abre una consola sin
+    # tenant (specs/011 5.7). Para el resto de scopes es obligatorio y lo exige
+    # create_ui_ticket.
+    tenant_id: Optional[int] = None
     scope: str
 
 
@@ -329,11 +345,123 @@ def _load_tenant_datasource(tenant_id: int) -> dict[str, Any]:
         conn.close()
 
 
-def _issue_ticket(user_id: int, tenant_id: int, scope: str) -> str:
+def _node_base_url(ip: Optional[str], port: Optional[int], default_port: int) -> str:
+    """Compone la URL base de un nodo de infraestructura.
+
+    ``service_ip`` manda sobre ``ip_address`` porque el nodo puede tener la IP
+    de acceso (ansible_host) y otra de servicio; para las consolas de
+    administracion se alcanza por la de servicio. Misma convencion que el ABM
+    de nodos.
+    """
+    host = ip or "127.0.0.1"
+    return f"http://{host}:{port or default_port}"
+
+
+def _resolve_vmalert_upstream(tenant_id: int) -> str:
+    """URL base de la consola vmalert del tenant (specs/011 5.7).
+
+    La instancia se resuelve SIEMPRE por ``tenant_vmalert_instances.tenant_id``:
+    el cliente nunca elige el nodo, asi que no hay forma de pedir la consola de
+    otra instancia. Exige que el tenant siga activo, que la instancia este
+    ``deployed`` y habilitada.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT n.service_ip, n.ip_address, vi.port, vi.unit_name
+            FROM tenant_vmalert_instances vi
+            JOIN infrastructure_nodes n ON n.id = vi.instance_id
+            JOIN tenants t ON t.id = vi.tenant_id
+            WHERE vi.tenant_id = %s
+              AND vi.status = 'deployed'
+              AND vi.enabled = TRUE
+              AND t.status = 'active'
+              AND t.deleted_at IS NULL
+            """,
+            (tenant_id,),
+        )
+        row = cursor.fetchone()
+    finally:
+        cursor.close()
+        conn.close()
+    if not row:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"El tenant {tenant_id} no tiene una instancia vmalert desplegada "
+                "y habilitada."
+            ),
+        )
+    return _node_base_url(row[0] or row[1], row[2], 8880)
+
+
+def _resolve_alertmanager_upstream() -> str:
+    """URL base de la consola global de Alertmanager (specs/011 5.7).
+
+    Alertmanager es un nodo singleton del stack: se toma el activo del
+    inventario. No hay tenant implicado, por eso el control de acceso es el
+    perfil ``alerts_manager`` del usuario, no la pertenencia a un tenant.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT service_ip, ip_address, port
+            FROM infrastructure_nodes
+            WHERE component_type = 'alertmanager'
+              AND is_active = TRUE
+            ORDER BY id
+            LIMIT 1
+            """
+        )
+        row = cursor.fetchone()
+    finally:
+        cursor.close()
+        conn.close()
+    if not row:
+        raise HTTPException(
+            status_code=503,
+            detail="No hay ningun nodo Alertmanager activo en la infrastructura.",
+        )
+    return _node_base_url(row[0] or row[1], row[2], 9093)
+
+
+def _user_has_profile(user_id: int, profile_code: str) -> bool:
+    """True si el usuario tiene el perfil, resuelto desde la base.
+
+    user_roles -> role_profiles -> profiles. No se leen los claims del token: un
+    JWT con claims alterados no amplia privilegios.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM user_roles ur
+            JOIN role_profiles rp ON rp.role_id = ur.role_id
+            JOIN profiles p ON p.id = rp.profile_id
+            WHERE ur.user_id = %s AND p.code = %s
+            """,
+            (user_id, profile_code),
+        )
+        return cursor.fetchone()[0] > 0
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _issue_ticket(user_id: int, tenant_id: Optional[int], scope: str) -> str:
     """Persiste un ticket de un solo uso para el par (usuario, tenant).
 
     El ``scope`` queda guardado en la fila: es el que decide a que upstream se
     monta la consola al canjear y al servir cada request (specs/010).
+
+    ``tenant_id`` es NULL para el scope ``alertmanager_global``: es la unica
+    consola sin tenant (specs/011 5.7).
     """
     ticket = secrets.token_urlsafe(32)
     expires_at = datetime.utcnow() + timedelta(minutes=UI_TICKET_TTL_MINUTES)
@@ -941,7 +1069,19 @@ def create_ui_ticket(
     if required_profile is None:
         raise HTTPException(status_code=400, detail="Alcance de consola no reconocido.")
 
-    ds = _load_tenant_datasource(body.tenant_id)
+    # El scope global no tiene tenant; el resto lo necesita para resolver el
+    # upstream y para validar la pertenencia del usuario (specs/011 5.7).
+    if body.scope == ALERTMANAGER_SCOPE:
+        tenant_id: Optional[int] = None
+        upstream_label = "Alertmanager global"
+    else:
+        if body.tenant_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"El alcance '{body.scope}' requiere tenant_id.",
+            )
+        tenant_id = body.tenant_id
+        upstream_label = f"tenant {tenant_id}"
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -975,14 +1115,26 @@ def create_ui_ticket(
         cursor.close()
         conn.close()
 
-    # Re-checa la pertenencia del tenant en la base. verify_tenant_access es el
-    # que valida user_tenants ∪ role_tenants; se reutiliza para no duplicar reglas.
-    verify_tenant_access(body.tenant_id)(payload)
+    # Fail-fast: se resuelve el upstream ANTES de emitir el ticket para no
+    # devolver una URL que al canjear va a fallar (instancia sin desplegar, nodo
+    # de Alertmanager inexistente, tenant sin datasource de lectura).
+    if body.scope == VMALERT_SCOPE:
+        _resolve_vmalert_upstream(tenant_id)
+    elif body.scope == ALERTMANAGER_SCOPE:
+        _resolve_alertmanager_upstream()
+    else:
+        _load_tenant_datasource(tenant_id)
 
-    ticket = _issue_ticket(user_id, body.tenant_id, body.scope)
+    if tenant_id is not None:
+        # Re-checa la pertenencia del tenant en la base. verify_tenant_access es
+        # el que valida user_tenants ∪ role_tenants; se reutiliza para no
+        # duplicar reglas.
+        verify_tenant_access(tenant_id)(payload)
+
+    ticket = _issue_ticket(user_id, tenant_id, body.scope)
     logger.info(
         "Ticket de UI emitido para tenant=%s (%s) scope=%s usuario=%s",
-        body.tenant_id, ds["name"], body.scope, username,
+        tenant_id, upstream_label, body.scope, username,
     )
     return UITicketResponse(url=f"{UI_BASE_PREFIX}/redeem/{ticket}")
 
@@ -1029,14 +1181,42 @@ def _resolve_session(request: Request) -> dict[str, Any]:
     raise HTTPException(status_code=401, detail="Sesion de UI requerida.")
 
 
-def _authorize_session(session: dict[str, Any], tenant_id: int) -> None:
-    """Verifica que la sesion resuelta corresponda al tenant solicitado."""
+def _authorize_session(session: dict[str, Any], tenant_id: Optional[int]) -> None:
+    """Verifica que la sesion resuelta corresponda al tenant solicitado.
+
+    ``tenant_id`` es NULL en el scope ``alertmanager_global``: no hay tenant que
+    validar. En ese caso el control de acceso no es la pertenencia al tenant sino
+    el perfil ``alerts_manager``, que el proxy re-chequea en cada request
+    (``_authorize_admin_console``).
+    """
+    if tenant_id is None:
+        return
     if session["auth"] == "jwt":
         payload = session["payload"]
         verify_tenant_access(tenant_id)(payload)
         return
     if session["tenant_id"] != tenant_id:
         raise HTTPException(status_code=403, detail="El ticket no corresponde a ese tenant.")
+
+
+def _authorize_admin_console(ticket_user_id: int, scope: str) -> None:
+    """Re-valida el perfil de las consolas de administracion en cada request.
+
+    En la emision del ticket el perfil ya se comprueba, pero la consola vive
+    muchos minutos tras el canje y el usuario puede perder el perfil mientras la
+    pestana sigue abierta. Para los scopes de administracion el perfil se vuelve
+    a resolver desde la base en cada peticion.
+
+    Devuelve ``None``: es una comprobacion, no un permiso.
+    """
+    required_profile = UI_SCOPE_PROFILE.get(scope)
+    if required_profile is None:
+        raise HTTPException(status_code=400, detail="Alcance de consola no reconocido.")
+    if not _user_has_profile(ticket_user_id, required_profile):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Acceso denegado. Se requiere el perfil '{required_profile}'.",
+        )
 
 
 @router.get(UI_REDEEM_PATH, response_class=HTMLResponse)
@@ -1063,13 +1243,17 @@ def redeem_ui_ticket(ticket: str, request: Request) -> Response:
             return _unauthorized_response(request, str(exc.detail))
         raise
 
-    if consumed.get("scope") == PARSES_SCOPE:
-        # Parses no tiene scoping de Victoria que inyectar: se monta en la raiz
-        # del ticket. La barra final hace que el proxy reciba path="".
+    if consumed.get("scope") in ROOT_MOUNTED_SCOPES:
+        # Parses, el vmalert del tenant y el Alertmanager global no tienen
+        # scoping de Victoria que inyectar: se montan en la raiz del ticket. La
+        # barra final hace que el proxy reciba path="".
         target = f"{UI_BASE_PREFIX}/{ticket}/"
         response = RedirectResponse(url=target, status_code=307)
         _set_ui_cookie(response, ticket, request)
-        logger.info("Ticket de UI canjeado: tenant=%s -> Parses %s", consumed["tenant_id"], target)
+        logger.info(
+            "Ticket de UI canjeado: tenant=%s scope=%s -> consola en la raiz %s",
+            consumed["tenant_id"], consumed["scope"], target,
+        )
         return response
 
     ds = _load_tenant_datasource(consumed["tenant_id"])
@@ -1135,9 +1319,24 @@ async def proxy_ui(
     _authorize_session(session, tenant_id)
 
     parses = scope == PARSES_SCOPE
+    admin_console = scope in ADMIN_CONSOLE_SCOPES
     project: Optional[str] = None
+    upstream_url: Optional[str] = None
 
-    if parses:
+    if admin_console:
+        # Consolas de administracion (vmalert del tenant / Alertmanager global).
+        # El perfil se re-valida en cada request y el upstream se resuelve desde
+        # la base: el cliente no elige ni el nodo ni el tenant (specs/011 5.7).
+        _authorize_admin_console(row[0], scope)
+        if request.method in PARSES_WRITE_METHODS:
+            raise HTTPException(status_code=405, detail="Metodo no permitido.")
+        _reject_path_traversal(path)
+        upstream_url = (
+            _resolve_vmalert_upstream(tenant_id)
+            if scope == VMALERT_SCOPE
+            else _resolve_alertmanager_upstream()
+        )
+    elif parses:
         project = _parses_project_for(session)
         if "://" in path or ".." in path or path.startswith("/"):
             raise HTTPException(status_code=400, detail="Ruta de UI invalida.")
@@ -1162,7 +1361,13 @@ async def proxy_ui(
     if request.method in ("POST", "PUT", "PATCH", "DELETE"):
         body = await request.body()
 
-    if parses:
+    if admin_console:
+        # Consola montada en la raiz: el upstream resuelto por el servidor es la
+        # base y la ruta del cliente se le anade tal cual. Sin scoping de Victoria
+        # y sin reenviar la cookie de sesion del gateway al nodo.
+        target_url = f"{upstream_url}/{path}"
+        forward_headers: dict[str, str] = {}
+    elif parses:
         rejected = _parses_guard_body(body, request.method, project or "")
         if rejected is not None:
             return rejected
