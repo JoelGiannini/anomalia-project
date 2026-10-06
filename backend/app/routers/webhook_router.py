@@ -6,9 +6,9 @@ from datetime import datetime
 import json
 import logging
 
-from .auth import verify_any_user_token, verify_admin_token
-from .database import get_db_connection
-from .ai_providers import get_provider, AIProviderError, build_alert_prompt
+from ..auth import verify_any_user_token, verify_admin_token
+from ..database import get_db_connection
+from ..ai_providers import get_provider, AIProviderError, build_alert_prompt
 
 router = APIRouter(prefix="/api/v1/webhook", tags=["Webhooks"])
 
