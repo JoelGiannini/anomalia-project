@@ -16,3 +16,4 @@ site:
           default: true
           content:
             directory: null
+            language: es
