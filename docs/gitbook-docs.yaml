@@ -2,10 +2,29 @@ $schema: https://api.gitbook.com/gitbook-docs.yaml
 site:
   title: Anomalia Docs
   structure:
-    - type: space
-      key: space-1
+    - type: section
+      key: section-1
+      title: Anomalia Docs
+      path: anomalia-docs
+      default: true
+      children:
+        - type: space
+          key: space-1
+          title: Untitled
+          path: untitled
+          default: true
+          content:
+            directory: ./anomalia
+    - type: section
+      key: section-2
       title: Untitled
       path: untitled
-      default: true
-      content:
-        directory: ./anomalia
+      children:
+        - type: space
+          key: space-2
+          title: Untitled
+          path: untitled
+          default: true
+          draft: true
+          content:
+            directory: ./untitled
