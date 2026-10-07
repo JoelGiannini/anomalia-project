@@ -6,12 +6,13 @@ site:
       key: section-1
       title: Anomalia Docs
       path: anomalia-docs
+      description: ""
       default: true
       children:
         - type: space
           key: space-1
-          title: Untitled
-          path: untitled
+          title: Anomalia
+          path: anomalia
           default: true
           content:
-            directory: ./anomalia
+            directory: null
