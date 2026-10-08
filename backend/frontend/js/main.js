@@ -408,6 +408,8 @@ document.addEventListener("DOMContentLoaded", async () => {
             addMessage('user', text);
             input.value = '';
             input.disabled = true;
+            const sendBtn = document.getElementById('ai-assistant-send');
+            if (sendBtn) sendBtn.disabled = true;
 
             try {
                 const response = await api.aiChat({
@@ -418,6 +420,12 @@ document.addEventListener("DOMContentLoaded", async () => {
                 addMessage('assistant', response.response);
             } catch (err) {
                 addMessage('assistant', `Error: ${err.message || err}`);
+            } finally {
+                if (input) {
+                    input.disabled = false;
+                    input.focus();
+                }
+                if (sendBtn) sendBtn.disabled = false;
             }
         }
 
@@ -482,10 +490,30 @@ document.addEventListener("DOMContentLoaded", async () => {
         // Initialize
         setContext('general');
 
-        // Show toggle button if user has alerts_manager or admin profile
-        const profiles = state.currentUserProfiles || [];
-        if (profiles.includes('alerts_manager') || profiles.includes('admin')) {
-            document.getElementById('ai-assistant-toggle').style.display = 'flex';
+        // Always show toggle button for all authenticated users
+        const toggleBtnEl = document.getElementById('ai-assistant-toggle');
+        if (toggleBtnEl) toggleBtnEl.style.display = 'flex';
+
+        // ============ GitBook Documentation Modal & Toggle ============
+        const gitbookToggle = document.getElementById('gitbook-toggle');
+        const gitbookModal = document.getElementById('gitbook-modal');
+        const gitbookClose = document.getElementById('gitbook-modal-close');
+
+        if (gitbookToggle && gitbookModal) {
+            gitbookToggle.addEventListener('click', () => {
+                gitbookModal.classList.remove('hidden');
+                gitbookModal.classList.add('flex');
+            });
+            gitbookClose?.addEventListener('click', () => {
+                gitbookModal.classList.add('hidden');
+                gitbookModal.classList.remove('flex');
+            });
+            gitbookModal.addEventListener('click', (e) => {
+                if (e.target === gitbookModal) {
+                    gitbookModal.classList.add('hidden');
+                    gitbookModal.classList.remove('flex');
+                }
+            });
         }
     })();
     // ============ End AI Assistant ============

@@ -40,6 +40,7 @@ ningun valor de scoping del cliente.
 """
 
 import json
+import asyncio
 import logging
 import os
 import re
@@ -1273,30 +1274,21 @@ def redeem_ui_ticket(ticket: str, request: Request) -> Response:
     return response
 
 
-@router.api_route(
-    UI_BASE_PREFIX + "/{ticket}/{path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-)
-async def proxy_ui(
-    ticket: str,
-    path: str,
-    request: Request,
-) -> Response:
-    """Reenvía la UI y sus llamadas API al upstream que corresponde al scope.
+def _proxy_prepare(
+    ticket: str, path: str, request: Request
+) -> tuple[Optional[Response], dict[str, Any]]:
+    """Fase de autorizacion y resolucion de upstream de ``proxy_ui`` (sync).
 
-    Dos upstream posibles, decididos por el ``scope`` persistido en el ticket:
-      - scopes de Victoria -> ``read_url`` con el scoping del tenant inyectado
-        desde tenant_datasources;
-      - ``dashboards``     -> el contenedor ``parses``, con los metodos de
-        escritura habilitados y el aislamiento por proyecto de Perses.
-
-    Los headers de autenticación del cliente nunca se reenvían al upstream.
+    Se ejecuta via asyncio.to_thread: aqui hay varias queries cortas
+    (ui_tickets, tenant_datasources, vmalert/alertmanager) y ninguna espera de
+    lock debe poder congelar el event loop de uvicorn (spec 011 4.2). Devuelve
+    la respuesta temprana (si la hay) o el contexto ya validado en ``ctx``.
     """
     try:
         session = _resolve_session(request)
     except HTTPException as exc:
         if exc.status_code == 401:
-            return _unauthorized_response(request, str(exc.detail))
+            return _unauthorized_response(request, str(exc.detail)), {}
         raise
 
     conn = get_db_connection()
@@ -1311,9 +1303,9 @@ async def proxy_ui(
         cursor.close()
         conn.close()
     if not row:
-        return _unauthorized_response(request, "Ticket de UI invalido.")
+        return _unauthorized_response(request, "Ticket de UI invalido."), {}
     if datetime.utcnow() >= row[3]:
-        return _unauthorized_response(request, "El acceso a esta consola ha caducado.")
+        return _unauthorized_response(request, "El acceso a esta consola ha caducado."), {}
 
     tenant_id, scope = row[1], row[2]
     _authorize_session(session, tenant_id)
@@ -1322,6 +1314,7 @@ async def proxy_ui(
     admin_console = scope in ADMIN_CONSOLE_SCOPES
     project: Optional[str] = None
     upstream_url: Optional[str] = None
+    ds: Optional[dict[str, Any]] = None
 
     if admin_console:
         # Consolas de administracion (vmalert del tenant / Alertmanager global).
@@ -1342,7 +1335,7 @@ async def proxy_ui(
             raise HTTPException(status_code=400, detail="Ruta de UI invalida.")
         rejected = _parses_guard_path(path, request.method, project)
         if rejected is not None:
-            return rejected
+            return rejected, {}
     else:
         if request.method in PARSES_WRITE_METHODS:
             raise HTTPException(status_code=405, detail="Metodo no permitido.")
@@ -1356,6 +1349,47 @@ async def proxy_ui(
     # se renueva a la par: su max_age replica el TTL y si no la refrescamos el
     # navegador la descarta mientras el ticket sigue vivo en la BD.
     ticket_renewed = _touch_ticket(ticket)
+
+    ctx: dict[str, Any] = {
+        "parses": parses,
+        "admin_console": admin_console,
+        "project": project,
+        "upstream_url": upstream_url,
+        "ds": ds,
+        "ticket_renewed": ticket_renewed,
+    }
+    return None, ctx
+
+
+@router.api_route(
+    UI_BASE_PREFIX + "/{ticket}/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def proxy_ui(
+    ticket: str,
+    path: str,
+    request: Request,
+) -> Response:
+    """Reenvía la UI y sus llamadas API al upstream que corresponde al scope.
+
+    Dos upstream posibles, decididos por el ``scope`` persistido en el ticket:
+      - scopes de Victoria -> ``read_url`` con el scoping del tenant inyectado
+        desde tenant_datasources;
+      - ``dashboards``     -> el contenedor ``parses``, con los metodos de
+        escritura habilitados y el aislamiento por proyecto de Perses.
+
+    Los headers de autenticación del cliente nunca se reenvían al upstream.
+    """
+    early, ctx = await asyncio.to_thread(_proxy_prepare, ticket, path, request)
+    if early is not None:
+        return early
+
+    parses = ctx["parses"]
+    admin_console = ctx["admin_console"]
+    project = ctx["project"]
+    upstream_url = ctx["upstream_url"]
+    ds = ctx["ds"]
+    ticket_renewed = ctx["ticket_renewed"]
 
     body: Optional[bytes] = None
     if request.method in ("POST", "PUT", "PATCH", "DELETE"):

@@ -424,6 +424,24 @@ def _guard_internal_tenant(cursor, tenant_id: int, action: str):
             detail=f"{action}: el tenant es de control interno y no admite modificaciones.",
         )
 
+def _guard_non_profiles_tenant(cursor, tenant_id: int, action: str):
+    """Bloquea operaciones vmalert sobre tenants pyroscope (type='profiles').
+
+    Los perfiles no son series PromQL consultables por vmalert (spec 011 §4.6):
+    estos tenants no tienen instancia vmalert, por lo que deploy/redeploy no
+    tienen sentido y se rechazan con 400 en lugar de encolar un job que falla.
+    """
+    cursor.execute("SELECT type FROM tenants WHERE id = %s;", (tenant_id,))
+    row = cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Tenant no encontrado")
+    if row[0] == 'profiles':
+        raise HTTPException(
+            status_code=400,
+            detail=f"{action}: el tenant es tipo 'profiles' (Pyroscope) y no lleva "
+                   "instancia vmalert (los perfiles no son consultables por PromQL).",
+        )
+
 # --- ROLES (roles_manager) ---
 @router.get("/roles", dependencies=[Depends(verify_profile_access("roles_manager"))])
 def get_roles_admin():
@@ -996,6 +1014,7 @@ def deploy_vmalert(tenant_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
+        _guard_non_profiles_tenant(cursor, tenant_id, "Desplegar instancia vmalert")
         job_id = str(uuid.uuid4())
         cursor.execute("""INSERT INTO job_state (id, type, ref_id, status, phase, progress_pct, created_by) VALUES (%s, %s, %s, %s, %s, %s, %s);""", (job_id, "vmalert_deploy", tenant_id, "queued", "init", 0, None))
         conn.commit()
@@ -1023,6 +1042,7 @@ def redeploy_vmalert(tenant_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
+        _guard_non_profiles_tenant(cursor, tenant_id, "Redesplegar instancia vmalert")
         job_id = str(uuid.uuid4())
         cursor.execute("""INSERT INTO job_state (id, type, ref_id, status, phase, progress_pct, created_by) VALUES (%s, %s, %s, %s, %s, %s, %s);""", (job_id, "vmalert_redeploy", tenant_id, "queued", "init", 0, None))
         conn.commit()

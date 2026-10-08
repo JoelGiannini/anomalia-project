@@ -65,8 +65,8 @@
       register: vmalert_stop_result
       failed_when: >
         vmalert_stop_result.failed and
-        ('could not be found' not in (vmalert_stop_result.msg | default(''))) and
-        ('does not exist' not in (vmalert_stop_result.msg | default('')))
+        ('could not find the requested service' not in (vmalert_stop_result.msg | lower | default(''))) and
+        ('does not exist' not in (vmalert_stop_result.msg | lower | default('')))
 
     - name: Eliminar unidades systemd por tenant (state=absent)
       ansible.builtin.file:
@@ -75,29 +75,95 @@
       loop: "{{ vmalert_instances }}"
       when: (vmalert_state | default('present')) == 'absent'
 
-- name: Modo single (retrocompatible)
+    - name: Detener vmalert single si estuviera corriendo (modo por-tenant)
+      ansible.builtin.systemd:
+        name: anomalia-vmalert.service
+        state: stopped
+        enabled: no
+      when: (vmalert_state | default('present')) == 'present'
+      register: single_unit_stop
+      failed_when: >
+        single_unit_stop.failed and
+        ('could not find the requested service' not in (single_unit_stop.msg | lower | default(''))) and
+        ('does not exist' not in (single_unit_stop.msg | lower | default('')))
+
+    - name: Eliminar unit y reglas planas del vmalert single (modo por-tenant)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/anomalia-vmalert.service
+        - /etc/anomalia/vmalert/alert_rules.yml
+      when: (vmalert_state | default('present')) == 'present'
+
+    - name: Recargar daemon systemd (modo por-tenant)
+      ansible.builtin.systemd:
+        daemon_reload: yes
+      when: (vmalert_state | default('present')) == 'present'
+
+- name: Modo single (retrocompatible; con vmalert_per_tenant=true solo limpia, nunca crea)
   when: not (vmalert_instances is defined and vmalert_instances|length > 0)
   block:
-    - name: Crear directorio de configuración para vmalert con propiedad de anomalia
-      ansible.builtin.file:
-        path: /etc/anomalia/vmalert
-        state: directory
-        owner: "{{ nombre_usuario }}"
-        group: "{{ nombre_usuario }}"
-        mode: "0755"
+    - name: Detectar unidades vmalert por-tenant existentes en el nodo
+      ansible.builtin.find:
+        paths: /etc/systemd/system
+        patterns: "anomalia-vmalert-*.service"
+      register: vmalert_pt_units
 
-    - name: Copiar reglas de alertas básicas asignadas a anomalia
-      ansible.builtin.template:
-        src: alert_rules.yml.j2
-        dest: /etc/anomalia/vmalert/alert_rules.yml
-        owner: "{{ nombre_usuario }}"
-        group: "{{ nombre_usuario }}"
-        mode: "0644"
-      notify: Recargar systemd y reiniciar vmalert
+    - name: Limpiar el single si el nodo tiene unidades por-tenant o el modo por-tenant está forzado (convergencia)
+      when: >
+        vmalert_pt_units.files | length > 0 or
+        (vmalert_per_tenant | default(false) | bool)
+      block:
+        - name: Detener vmalert single (convergencia)
+          ansible.builtin.systemd:
+            name: anomalia-vmalert.service
+            state: stopped
+            enabled: no
+          register: single_converge_stop
+          failed_when: >
+            single_converge_stop.failed and
+            ('could not find the requested service' not in (single_converge_stop.msg | lower | default(''))) and
+            ('does not exist' not in (single_converge_stop.msg | lower | default('')))
 
-    - name: Copiar servicio systemd para vmalert
-      ansible.builtin.template:
-        src: vmalert.service.j2
-        dest: /etc/systemd/system/anomalia-vmalert.service
-        mode: "0644"
-      notify: Recargar systemd y reiniciar vmalert
+        - name: Eliminar unit y reglas planas del vmalert single (convergencia)
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /etc/systemd/system/anomalia-vmalert.service
+            - /etc/anomalia/vmalert/alert_rules.yml
+
+        - name: Recargar daemon systemd (convergencia)
+          ansible.builtin.systemd:
+            daemon_reload: yes
+
+    - name: Crear config y unit vmalert single (solo instalacion limpia sin por-tenant)
+      when:
+        - vmalert_pt_units.files | length == 0
+        - (vmalert_state | default('present')) == 'present'
+        - not (vmalert_per_tenant | default(false) | bool)
+      block:
+        - name: Crear directorio de configuración para vmalert con propiedad de anomalia
+          ansible.builtin.file:
+            path: /etc/anomalia/vmalert
+            state: directory
+            owner: "{{ nombre_usuario }}"
+            group: "{{ nombre_usuario }}"
+            mode: "0755"
+
+        - name: Copiar reglas de alertas básicas asignadas a anomalia
+          ansible.builtin.template:
+            src: alert_rules.yml.j2
+            dest: /etc/anomalia/vmalert/alert_rules.yml
+            owner: "{{ nombre_usuario }}"
+            group: "{{ nombre_usuario }}"
+            mode: "0644"
+          notify: Recargar systemd y reiniciar vmalert
+
+        - name: Copiar servicio systemd para vmalert
+          ansible.builtin.template:
+            src: vmalert.service.j2
+            dest: /etc/systemd/system/anomalia-vmalert.service
+            mode: "0644"
+          notify: Recargar systemd y reiniciar vmalert

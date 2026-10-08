@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 Restart=always
-ExecStart=/usr/local/bin/vmselect -httpListenAddr={{ vmselect_ip | default(ansible_host) | default('127.0.0.1') }}:{{ vmselect_port | default('8481') }} {%- for host in groups['vm_storage_nodes'] %} -storageNode={{ hostvars[host].vmstorage_ip | default(hostvars[host].ansible_host) | default('127.0.0.1') }}:{{ hostvars[host].vmstorage_vmselect_port | default('8404') }}{% endfor %}
+ExecStart=/usr/local/bin/vmselect -httpListenAddr={{ vmselect_ip | default(ansible_host) | default('127.0.0.1') }}:{{ vmselect_port | default('8481') }} {%- for host in groups.get('vm_storage_nodes', []) %} -storageNode={{ hostvars[host].vmstorage_ip | default(hostvars[host].ansible_host) | default('127.0.0.1') }}:{{ hostvars[host].vmstorage_vmselect_port | default('8404') }}{% endfor %}
 
 PrivateTmp=yes
 ProtectHome=yes

@@ -4,6 +4,7 @@
     path: "{{ vtstorage_path }}"
     state: directory
     mode: '0755'
+  when: inventory_hostname in groups.get('vt_storage_nodes', [])
 
 - name: Copiar servicio systemd de anomalia vtstorage
   template:
@@ -11,6 +12,7 @@
     dest: /etc/systemd/system/anomalia-vtstorage.service
     mode: '0644'
   notify: Recargar systemd y reiniciar vtstorage
+  when: inventory_hostname in groups.get('vt_storage_nodes', [])
 
 - name: Copiar servicio systemd de anomalia vtinsert
   template:
@@ -18,6 +20,7 @@
     dest: /etc/systemd/system/anomalia-vtinsert.service
     mode: '0644'
   notify: Recargar systemd y reiniciar vtinsert
+  when: inventory_hostname in groups.get('vt_insert_nodes', [])
 
 - name: Copiar servicio systemd de anomalia vtselect
   template:
@@ -25,3 +28,4 @@
     dest: /etc/systemd/system/anomalia-vtselect.service
     mode: '0644'
   notify: Recargar systemd y reiniciar vtselect
+  when: inventory_hostname in groups.get('vt_select_nodes', [])

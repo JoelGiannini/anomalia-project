@@ -6,7 +6,20 @@ User=root
 {% if item is defined %}
 ExecStart=/usr/local/bin/vmalert --datasource.url={{ item.datasource_url }} --remoteRead.url={{ item.datasource_url }} --remoteWrite.url={{ item.remote_write_url }} -notifier.url={{ item.alertmanager_url }} -rule={{ item.rules_path + '/alert_rules.yml' }} --httpListenAddr=:{{ item.port }} -evaluationInterval={{ item.evaluation_interval | default('15s') }}
 {% else %}
-ExecStart=/usr/local/bin/vmalert --datasource.url=http://{{ hostvars[groups['vm_select_nodes'][0]].ansible_host | default('127.0.0.1') }}:{{ hostvars[groups['vm_select_nodes'][0]].vmselect_port | default('8401') }} --remoteRead.url=http://{{ hostvars[groups['vm_select_nodes'][0]].ansible_host | default('127.0.0.1') }}:{{ hostvars[groups['vm_select_nodes'][0]].vmselect_port | default('8401') }} --remoteWrite.url=http://{{ hostvars[groups['vm_insert_nodes'][0]].ansible_host | default('127.0.0.1') }}:{{ hostvars[groups['vm_insert_nodes'][0]].vminsert_port | default('8400') }} -notifier.url=http://{{ hostvars[groups['alertmanager_nodes'][0]].ansible_host | default('127.0.0.1') }}:{{ hostvars[groups['alertmanager_nodes'][0]].alertmanager_port | default('9093') }} -rule=/etc/anomalia/vmalert/alert_rules.yml --httpListenAddr=:8880 -evaluationInterval=15s
+{# Resolver nodos principales tolerando grupos vacíos u omitidos (spec 013). #}
+{%- set vm_sel_nodes = groups.get('vm_select_nodes', []) -%}
+{%- set vm_ins_nodes = groups.get('vm_insert_nodes', []) -%}
+{%- set am_nodes = groups.get('alertmanager_nodes', []) -%}
+{%- set vm_sel_host = vm_sel_nodes[0] if vm_sel_nodes else '' -%}
+{%- set vm_ins_host = vm_ins_nodes[0] if vm_ins_nodes else '' -%}
+{%- set am_host = am_nodes[0] if am_nodes else '' -%}
+{%- set vm_sel_addr = hostvars[vm_sel_host].ansible_host | default('127.0.0.1') if vm_sel_host else '127.0.0.1' -%}
+{%- set vm_sel_port = hostvars[vm_sel_host].vmselect_port | default('8401') if vm_sel_host else '8401' -%}
+{%- set vm_ins_addr = hostvars[vm_ins_host].ansible_host | default('127.0.0.1') if vm_ins_host else '127.0.0.1' -%}
+{%- set vm_ins_port = hostvars[vm_ins_host].vminsert_port | default('8400') if vm_ins_host else '8400' -%}
+{%- set am_addr = hostvars[am_host].ansible_host | default('127.0.0.1') if am_host else '127.0.0.1' -%}
+{%- set am_port = hostvars[am_host].alertmanager_port | default('9093') if am_host else '9093' -%}
+ExecStart=/usr/local/bin/vmalert --datasource.url=http://{{ vm_sel_addr }}:{{ vm_sel_port }}/select/0:0/prometheus --remoteRead.url=http://{{ vm_sel_addr }}:{{ vm_sel_port }}/select/0:0/prometheus --remoteWrite.url=http://{{ vm_ins_addr }}:{{ vm_ins_port }}/insert/0:0/prometheus -notifier.url=http://{{ am_addr }}:{{ am_port }} -rule=/etc/anomalia/vmalert/alert_rules.yml --httpListenAddr=:8880 -evaluationInterval=15s
 {% endif %}
 Restart=always
 

@@ -54,3 +54,14 @@
   until: result.rc == 0
   retries: 3
   delay: 10
+
+# Esperar readiness de la API de Perses antes de que arranque el gateway (spec 008):
+# el backend provisiona el proyecto al arrancar y no debe competir con el boot.
+- name: Esperar a que la API de Perses esté disponible
+  ansible.builtin.wait_for:
+    host: "{{ parses_ip | default('127.0.0.1') }}"
+    port: "{{ parses_port }}"
+    timeout: 120
+    state: started
+  become: yes
+  become_user: "{{ nombre_usuario }}"

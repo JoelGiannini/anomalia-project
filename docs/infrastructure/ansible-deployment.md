@@ -39,8 +39,11 @@ cd ansible-infra
 ansible-playbook -i inventory.ini destroy-infra.yml
 ```
 {% hint style="info" %}
-El playbook de destrucción detecta automáticamente el motor de contenedores y elimina contenedores, redes (`anomalia_aiops-net`), volúmenes y unidades systemd de Victoria y del firewall, manteniendo intactas las imágenes base cacheadas (`postgres`, `ollama`) y los certificados TLS en `/opt/anomalia/certs`.
+El playbook de destrucción detecta automáticamente el motor de contenedores y elimina contenedores, redes (`anomalia_aiops-net`), volúmenes y unidades systemd de Victoria y del firewall, manteniendo intactas las imágenes base cacheadas (`postgres`, `ollama`) y los certificados TLS en `/opt/anomalia/certs`. Además, retira las unidades **derivadas** `anomalia-vmalert-*.service` (vmalert por-tenant) descubiertas por `find`, sin hardcodear slugs.
 %}{% endhint %}
+
+### 4. Topología Flexible (inventario = única fuente)
+La topología se decide **libremente en `inventory.ini`**: quien instala coloca las IPs en cada grupo (`vlogs_*_nodes`, `vm_*_nodes`, `vt_*_nodes`, `pyroscope_nodes`, `vmauth_nodes`, `vmagent_nodes`, `alertmanager_nodes`, `vmalert_nodes`, `backend_nodes`, `parses_nodes`) y un **mismo host puede pertenecer a cualquier combinación de grupos**. Cada unit systemd se despliega únicamente en los hosts de su grupo (no se asume un layout monolítico). Las referencias cruzadas entre componentes usan `hostvars[groups['X'][0]]` prefiriendo la IP de servicio (`*_ip`) con fallback a `ansible_host` y `127.0.0.1`. Detalle completo en `specs/013-deployment-topology-and-idempotency.md`.
 
 ---
 
@@ -48,3 +51,7 @@ El playbook de destrucción detecta automáticamente el motor de contenedores y 
 
 - **Regeneración Incremental de Scrapes (`sync-scrapes.yml`):** Al desplegar o dar de baja una instancia vmalert por tenant, se encola automáticamente un proceso que regenera la configuración completa de `vmagent` y `vmauth` en los nodos correspondientes sin necesidad de reinstalar los binarios base.
 - **Sincronización de Reglas (`sync-vmalert-rules.yml`):** Permite materializar las reglas YAML almacenadas en la base de datos hacia las rutas dedicadas en cada nodo (`/etc/anomalia/vmalert/<tenant_slug>/alert_rules.yml`) aplicando recarga en caliente (`/-/reload`).
+
+### 5. Orden de Roles y Provisioning de Parses
+- El rol `parses` corre **antes** que el rol `backend` y espera readiness del puerto (`wait_for`): el gateway reprovisiona el proyecto de Parses al arrancar, por lo que Perses debe estar listo primero.
+- Tras un destroy+deploy los datos de Parses se pierden (`/perses` sin volumen) y el backend ejecuta un **catch-up no bloqueante al arranque** que recrea project + datasources + dashboards para todos los usuarios activos (idempotente, con reintentos). Detalle en `specs/008-parses-datasources-and-tenant-scoping.md`.

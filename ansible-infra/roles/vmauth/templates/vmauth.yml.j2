@@ -17,7 +17,7 @@ unauthorized_user:
         - "http://127.0.0.1:4040/"
 {% endif %}
 {% else %}
-        {% for host in groups['pyroscope_nodes'] | default(groups['vm_insert_nodes']) %}
+        {% for host in groups.get('pyroscope_nodes', groups.get('vm_insert_nodes', [])) %}
         - "http://{{ hostvars[host].pyroscope_ip | default(hostvars[host].ansible_host) | default('172.17.0.1') }}:{{ hostvars[host].pyroscope_port | default('4040') }}/"
       {% endfor %}
 {% endif %}
@@ -35,7 +35,7 @@ unauthorized_user:
         - "http://127.0.0.1:8400/"
 {% endif %}
 {% else %}
-        {% for host in groups['vm_insert_nodes'] %}
+        {% for host in groups.get('vm_insert_nodes', []) %}
         - "http://{{ hostvars[host].vminsert_ip | default(hostvars[host].ansible_host) | default('127.0.0.1') }}:{{ hostvars[host].vminsert_port | default('8400') }}/"
         {% endfor %}
 {% endif %}
@@ -53,7 +53,7 @@ unauthorized_user:
         - "http://127.0.0.1:8490/"
 {% endif %}
 {% else %}
-        {% for host in groups['vt_insert_nodes'] | default(groups['vm_insert_nodes']) %}
+        {% for host in groups.get('vt_insert_nodes', groups.get('vm_insert_nodes', [])) %}
         - "http://{{ hostvars[host].vtinsert_ip | default(hostvars[host].ansible_host) | default('127.0.0.1') }}:{{ hostvars[host].vtinsert_port | default('8490') }}/"
         {% endfor %}
 {% endif %}
@@ -71,7 +71,7 @@ unauthorized_user:
         - "http://127.0.0.1:8480/"
 {% endif %}
 {% else %}
-        {% for host in groups['vlogs_insert_nodes'] | default(groups['vm_insert_nodes']) %}
+        {% for host in groups.get('vlogs_insert_nodes', groups.get('vm_insert_nodes', [])) %}
         - "http://{{ hostvars[host].vlinsert_ip | default(hostvars[host].ansible_host) | default('127.0.0.1') }}:{{ hostvars[host].vlinsert_port | default('8480') }}/"
         {% endfor %}
 {% endif %}

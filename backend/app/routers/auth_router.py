@@ -1,4 +1,5 @@
 import os
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
 from typing import Optional
 from ..database import get_db_connection
@@ -136,14 +137,19 @@ def get_current_user_profile(user_payload: dict = Depends(verify_any_user_token)
         cursor.close()
         conn.close()
 
-@router.put("/theme")
-async def update_user_theme(
-    theme: Optional[str] = Form(None),
-    password: Optional[str] = Form(None),
-    avatar: Optional[UploadFile] = File(None),
-    user_payload: dict = Depends(verify_any_user_token)
-):
-    username = user_payload.get("sub")
+def _update_user_theme_sync(
+    username: str,
+    theme: Optional[str],
+    password: Optional[str],
+    avatar_filename: Optional[str],
+    avatar_content: Optional[bytes],
+) -> Optional[str]:
+    """Aplica tema/password/avatar en una transaccion corta (sync).
+
+    Se ejecuta via asyncio.to_thread para que ni la escritura de archivo ni una
+    espera de lock congele el event loop (spec 011 4.2). Devuelve la URL del
+    avatar o None.
+    """
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
@@ -155,14 +161,14 @@ async def update_user_theme(
                 cursor.execute("UPDATE users SET password_hash = %s WHERE username = %s", (hashed, username))
         elif theme:
             cursor.execute("UPDATE users SET theme = %s WHERE username = %s", (theme, username))
-        
+
         avatar_url = None
-        if avatar:
-            orig_filename = avatar.filename or "avatar.png"
+        if avatar_content is not None:
+            orig_filename = avatar_filename or "avatar.png"
             ext = orig_filename.split(".")[-1] if "." in orig_filename else "png"
-            
+
             safe_username = username.replace("@", "_").replace(".", "_")
-            
+
             # Limpiamos cualquier avatar anterior de este usuario (sin importar su extensión)
             for existing_file in os.listdir(MEDIA_DIR):
                 if existing_file.startswith(f"{safe_username}."):
@@ -173,18 +179,41 @@ async def update_user_theme(
 
             filename = f"{safe_username}.{ext}"
             filepath = os.path.join(MEDIA_DIR, filename)
-            
-            content = await avatar.read()
+
             with open(filepath, "wb") as f:
-                f.write(content)
-            
+                f.write(avatar_content)
+
             avatar_url = f"/media/{filename}"
 
         conn.commit()
-        return {"status": "success", "theme": theme, "avatar_url": avatar_url}
-    except Exception as e:
+        return avatar_url
+    except Exception:
         conn.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+        raise
     finally:
         cursor.close()
         conn.close()
+
+
+@router.put("/theme")
+async def update_user_theme(
+    theme: Optional[str] = Form(None),
+    password: Optional[str] = Form(None),
+    avatar: Optional[UploadFile] = File(None),
+    user_payload: dict = Depends(verify_any_user_token)
+):
+    username = user_payload.get("sub")
+    avatar_content = await avatar.read() if avatar is not None else None
+    avatar_filename = avatar.filename if avatar is not None else None
+    try:
+        avatar_url = await asyncio.to_thread(
+            _update_user_theme_sync,
+            username,
+            theme,
+            password,
+            avatar_filename,
+            avatar_content,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "success", "theme": theme, "avatar_url": avatar_url}

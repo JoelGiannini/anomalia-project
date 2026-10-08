@@ -184,6 +184,14 @@ Navegador → Perses server (/proxy/projects/<p>/datasources/<n>/...)
   re-chequea la BD. Se re-emite en cada login; un token expirado solo rompe el
   dashboard hasta el próximo login. El valor va en `docker-compose.yml.j2` en
   **los dos** servicios del gateway, con comentario que remite a esta spec.
+- **Catch-up de provisioning al arranque del gateway** (spec 008 / spec 013): tras un
+  destroy+deploy los datos de Perses (`database.file.folder: /perses`, sin volumen
+  persistente) se pierden. El backend ejecuta en `lifespan` un catch-up **no bloqueante**
+  (`asyncio.create_task(_parses_provision_catchup)`) que re-provisiona el project,
+  datasources y dashboards para **todos los usuarios activos**. Idempotente
+  (GET→POST/PUT) y tolerante a que Parses aún no esté listo: `provision_user_parses`
+  reintenta transitorios con backoff y el próximo login cubre el residuo. El rol `parses`
+  se despliega **antes** que `backend` y espera readiness del puerto (`wait_for`).
 - **Provisioning por usuario al login** (non-blocking, `BackgroundTasks`): el backend
   llama a la REST de Perses y garantiza que existan:
   1. Project `anomalia-<hash de username>`.

@@ -30,6 +30,7 @@ import json
 import os
 import re
 import logging
+import time
 from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any, Optional
@@ -665,47 +666,63 @@ def _resolve_panel_datasources(panel: dict[str, Any], datasources_by_kind: dict[
 def provision_user_parses(username: str) -> dict[str, Any]:
     """Idempotente: crea/actualiza el project, datasources y dashboards del usuario.
 
-    Se ejecuta en background tras el login. Una falla aqui NO debe impedir el login:
-    el caller es responsable de tolerar excepciones.
+    Se ejecuta en background tras el login o en el catch-up de arranque (spec 008).
+    Una falla aqui NO debe impedir el login: el caller es responsable de tolerar
+    excepciones. Ante errores transitorios (Parses aún arrancando, 5xx, timeout)
+    se reintenta hasta 3 veces con backoff; el provisioning es idempotente
+    (GET->POST/PUT) por lo que re-ejecutar el bloque es seguro.
     """
-    tenants = user_tenant_rows(username)
-    project = _project_name(username)
-    token = mint_parses_token(username, [t["tenant_id"] for t in tenants])
-
+    backoff = [3, 6]  # segundos de espera entre intentos
+    last_error: Optional[Exception] = None
     outputs: dict[str, Any] = {
-        "project": project,
+        "project": _project_name(username),
         "datasources": [],
         "dashboards": [],
         "native_dashboards": [],
         "error": None,
     }
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            _ensure_project(client, project)
-            proxy_secret = _ensure_proxy_ca_secret(client, project)
-            datasources_by_kind: dict[str, str] = {}
-            for source in tenants:
-                # El primer datasource de cada tipo es el default de Perses y el
-                # que usan los dashboards nativos (uno por tipo, no uno por tenant).
-                kind = PLUGIN_KIND_BY_STORAGE.get(source["kind"])
-                is_default = bool(kind) and kind not in datasources_by_kind
-                payload = _datasource_payload(project, source, token, proxy_secret, is_default)
-                if payload is None:
-                    continue
-                ds_name = payload["metadata"]["name"]
-                _ensure_datasource(client, payload, ds_name, project)
-                outputs["datasources"].append(source["name"])
-                datasources_by_kind.setdefault(payload["spec"]["plugin"]["kind"], ds_name)
+    for attempt in range(1, 4):
+        try:
+            tenants = user_tenant_rows(username)
+            project = _project_name(username)
+            token = mint_parses_token(username, [t["tenant_id"] for t in tenants])
+            outputs["project"] = project
+            with httpx.Client(timeout=30.0) as client:
+                _ensure_project(client, project)
+                proxy_secret = _ensure_proxy_ca_secret(client, project)
+                datasources_by_kind: dict[str, str] = {}
+                for source in tenants:
+                    # El primer datasource de cada tipo es el default de Perses y el
+                    # que usan los dashboards nativos (uno por tipo, no uno por tenant).
+                    kind = PLUGIN_KIND_BY_STORAGE.get(source["kind"])
+                    is_default = bool(kind) and kind not in datasources_by_kind
+                    payload = _datasource_payload(project, source, token, proxy_secret, is_default)
+                    if payload is None:
+                        continue
+                    ds_name = payload["metadata"]["name"]
+                    _ensure_datasource(client, payload, ds_name, project)
+                    outputs["datasources"].append(source["name"])
+                    datasources_by_kind.setdefault(payload["spec"]["plugin"]["kind"], ds_name)
 
-                if (source["type"] or "").lower() == "metrics":
-                    outputs["dashboards"].extend(
-                        _provision_metrics_dashboards(client, project, source, ds_name)
-                    )
+                    if (source["type"] or "").lower() == "metrics":
+                        outputs["dashboards"].extend(
+                            _provision_metrics_dashboards(client, project, source, ds_name)
+                        )
 
-            outputs["native_dashboards"].extend(
-                provision_native_dashboards(client, project, datasources_by_kind)
+                outputs["native_dashboards"].extend(
+                    provision_native_dashboards(client, project, datasources_by_kind)
+                )
+            break
+        except Exception as exc:  # noqa: BLE001 - no debe tumbar el login
+            last_error = exc
+            logger.warning(
+                "Provision Parses para %s: intento %s/3 falló (%s%s)",
+                username, attempt, type(exc).__name__,
+                " - reintentando" if attempt < 3 else "",
             )
-    except Exception as exc:  # noqa: BLE001 - no debe tumbar el login
+            if attempt < 3:
+                time.sleep(backoff[attempt - 1])
+    else:
         logger.exception("No se pudo provisionar Parses para %s", username)
-        outputs["error"] = str(exc)
+        outputs["error"] = str(last_error)
     return outputs

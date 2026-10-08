@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 Restart=always
-ExecStart=/usr/local/bin/vminsert -httpListenAddr={{ vminsert_ip | default(ansible_host) | default('127.0.0.1') }}:{{ vminsert_port | default('8400') }} {%- for host in groups['vm_storage_nodes'] %} -storageNode={{ hostvars[host].vmstorage_ip | default(hostvars[host].ansible_host) | default('127.0.0.1') }}:{{ hostvars[host].vmstorage_vminsert_port | default('8403') }}{%- endfor %} -replicationFactor={{ vmreplicationFactor | default('1') }} -maxConcurrentInserts={{ vm_max_concurrent_inserts | default('64') }} -insert.maxQueueDuration={{ vm_insert_max_queue_duration | default('1m') }}
+ExecStart=/usr/local/bin/vminsert -httpListenAddr={{ vminsert_ip | default(ansible_host) | default('127.0.0.1') }}:{{ vminsert_port | default('8400') }} {%- for host in groups.get('vm_storage_nodes', []) %} -storageNode={{ hostvars[host].vmstorage_ip | default(hostvars[host].ansible_host) | default('127.0.0.1') }}:{{ hostvars[host].vmstorage_vminsert_port | default('8403') }}{%- endfor %} -replicationFactor={{ vmreplicationFactor | default('1') }} -maxConcurrentInserts={{ vm_max_concurrent_inserts | default('64') }} -insert.maxQueueDuration={{ vm_insert_max_queue_duration | default('1m') }}
 
 PrivateTmp=yes
 ProtectHome=yes

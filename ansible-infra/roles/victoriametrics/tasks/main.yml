@@ -6,6 +6,7 @@
     owner: "{{ nombre_usuario }}"
     group: "{{ nombre_usuario }}"
     mode: '0755'
+  when: inventory_hostname in groups.get('vm_storage_nodes', [])
 
 - name: Copiar servicio systemd de anomalia vmstorage
   ansible.builtin.template:
@@ -13,6 +14,7 @@
     dest: /etc/systemd/system/anomalia-vmstorage.service
     mode: '0644'
   notify: Recargar systemd y reiniciar vmstorage
+  when: inventory_hostname in groups.get('vm_storage_nodes', [])
 
 - name: Copiar servicio systemd de anomalia vminsert
   ansible.builtin.template:
@@ -20,6 +22,7 @@
     dest: /etc/systemd/system/anomalia-vminsert.service
     mode: '0644'
   notify: Recargar systemd y reiniciar vminsert
+  when: inventory_hostname in groups.get('vm_insert_nodes', [])
 
 - name: Copiar servicio systemd de anomalia vmselect
   ansible.builtin.template:
@@ -27,3 +30,4 @@
     dest: /etc/systemd/system/anomalia-vmselect.service
     mode: '0644'
   notify: Recargar systemd y reiniciar vmselect
+  when: inventory_hostname in groups.get('vm_select_nodes', [])

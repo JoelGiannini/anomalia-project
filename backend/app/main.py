@@ -6,6 +6,7 @@ import pyroscope
 import httpx
 import asyncio
 import contextlib
+import logging
 from typing import Any, Awaitable, Callable
 from fastapi import FastAPI, Request, Response, Depends
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
@@ -38,10 +39,50 @@ async def lifespan(app: FastAPI):
     vmalert_worker = VmalertWorker(interval=30)
     await tenant_worker.start()
     await vmalert_worker.start()
+    # Re-provisiona Parses al arranque de forma NO bloqueante (spec 008): tras un
+    # destroy+deploy los datos de Perses (/perses) se pierden y el proyecto solo
+    # se recrearía en el siguiente login; este catch-up lo cubre para todos los
+    # usuarios activos. Idempotente (GET->POST/PUT) y tolerante a que Parses aún
+    # no responda (reintentos internos + próximo login como respaldo).
+    asyncio.create_task(_parses_provision_catchup())
     yield
     # Shutdown
     await tenant_worker.stop()
     await vmalert_worker.stop()
+
+
+async def _parses_provision_catchup() -> None:
+    """Catch-up de provisioning de Parses para todos los usuarios activos.
+
+    No bloquea el arranque y nunca lanza: cualquier fallo queda en los logs y el
+    próximo login vuelve a intentarlo. Corre en ambos contenedores del gateway
+    (anomalia_gw/anomalia_gw_tls) y es benigno por ser idempotente.
+    """
+    from .database import get_db_connection
+    from .parses_provisioner import provision_user_parses
+
+    logger = logging.getLogger("anomalia")
+
+    def _collect_usernames() -> list[str]:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT username FROM users WHERE is_active = TRUE")
+            return [row[0] for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+            conn.close()
+
+    usernames = await asyncio.to_thread(_collect_usernames)
+
+    if not usernames:
+        return
+    logger.info("Catch-up Parses: provisionando %d usuario(s)", len(usernames))
+    for username in usernames:
+        try:
+            await asyncio.to_thread(provision_user_parses, username)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Catch-up Parses falló para %s: %s", username, exc)
 
 
 app = FastAPI(title="Backend ABM - Alert Management", lifespan=lifespan)

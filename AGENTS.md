@@ -29,6 +29,36 @@ Este documento sirve como manual de referencia técnica para cualquier asistente
   - Ecosistema Victoria (VictoriaMetrics, VictoriaLogs, VictoriaTraces, vmagent, vmalert, vmauth).
   - Alertas y Procesamiento: Alertmanager, Parses de Dashboards, Pyroscope.
 
+### 1.5 Principio Prioritario: Topología Flexible e Idempotencia
+
+Es **invariante para todo desarrollo** que la instalación se decida libremente
+desde el inventario, nunca asumida por el código:
+
+- **El inventario es la única fuente de topología.** Quien instala coloca en cada
+  grupo (`vlogs_*_nodes`, `vm_*_nodes`, `vt_*_nodes`, `pyroscope_nodes`,
+  `vmauth_nodes`, `vmagent_nodes`, `alertmanager_nodes`, `vmalert_nodes`,
+  `backend_nodes`, `parses_nodes`) las IPs que desee; un **mismo host puede
+  pertenecer a cualquier combinación de grupos**. Una instalación local (todas las
+  IPs → `localhost`) es un caso particular válido, no el diseño objetivo.
+- **Cada unidad systemd / componente se despliega ÚNICAMENTE en los hosts miembros
+  de su grupo** (`inventory_hostname in groups.get('<grupo>', [])`). Ningún role o
+  play puede asumir un layout monolítico o "todos los nodos".
+- **Referencias cruzadas** entre componentes siempre vía `hostvars[groups['X'][0]]`,
+  prefiriendo la IP de servicio (`*_ip`) con fallback a `ansible_host` y luego a
+  `127.0.0.1`. Los accesos a grupos en plantillas usan `groups.get('X', [])` para
+  tolerar grupos vacíos u omitidos.
+- **Idempotencia estricta:** toda task debe repetirse sin efectos colaterales.
+- **Destroy completo:** `destroy-infra.yml` debe retirar todo lo que el deploy
+  crea, incluidas unidades derivadas (p. ej. `anomalia-vmalert-*.service` por
+  tenant) descubiertas por `find`, sin hardcodear slugs ni hostnames.
+- **Fuente de verdad de los playbooks:** los playbooks raíz de `ansible-infra/` son
+  autoritativos; el role `backend` los propaga en deploy-time al contenedor
+  (`/app/playbooks`, ver `specs/013` §6). `roles/backend/src/` es legado muerto y
+  **no** se mantiene.
+- Toda modificación en specs, roles o playbooks debe validar estos invariantes
+  (checklist §3.1 y §3.2). Detalle completo en
+  `specs/013-deployment-topology-and-idempotency.md`.
+
 ---
 
 ## 2. Comandos de Entorno, Compilación y Testing
@@ -171,6 +201,9 @@ macOS/Windows **no soportados**.
   - Parses (dashboards, datasources y scoping por tenant) → `specs/008-parses-datasources-and-tenant-scoping.md`
   - Soporte de plataforma y prerrequisitos → `specs/009-platform-support-and-prerequisites.md`
   - Consolas de UI de telemetría (proxy de tickets, incluye Parses) → `specs/010-ui-console-proxy.md`
+  - vmalert por-tenant (dual-mode) → `specs/011-tenant-vmalert-per-tenant.md`
+  - Multitenancy vmalert y aprovisionamiento automático → `specs/012-multitenant-vmalert-and-auto-provisioning.md`
+  - Topología flexible e idempotencia (inventario = única fuente) → `specs/013-deployment-topology-and-idempotency.md`
 - [ ] Si no existe spec para lo que se va a hacer, crearla primero antes de implementar.
 
 **Después de implementar:**
@@ -184,6 +217,10 @@ macOS/Windows **no soportados**.
 - Respetar estrictamente el tipado en Python.
 - Respetar la modularidad en JS vanilla (`api.js`, `state.js`, `ui.js`, `admin.js`, `main.js`).
 - Respetar las estructuras de roles/perfiles en la base de datos.
+- Respetar la topología flexible e idempotencia (inventario = única fuente de
+  topología; cada unit se despliega solo en los hosts de su grupo; ningún play/role
+  asume layout monolítico; `destroy` retira todo lo que `deploy` crea, incluidas
+  units derivadas por-tenant; §1.5 y `specs/013`).
 - Verificar cambios con linters y pruebas antes de dar por finalizada una tarea.
 
 ### 3.3 Actualización Obligatoria Post-Cambio
@@ -271,12 +308,14 @@ cd ansible-infra && ansible-playbook -i inventory.ini destroy-infra.yml && ansib
 Esto destruye toda la infraestructura y la vuelve a levantar con los cambios aplicados. Requiere credenciales de sudo.
 
 El `destroy-infra.yml` es agnóstico al motor de contenedores (detecta Docker/Podman y
-Compose v1/v2 con los mismos facts que el deploy) y retira también el aislamiento L4 de
-los puertos de lectura: unit `anomalia-victoria-firewall`, cadena iptables
-`ANOMALIA_VICTORIA_READ` (con su salto en `INPUT`) y rich rules de firewalld. Las imágenes
-y volúmenes se borran solo si pertenecen a los proyectos compose de Anomalia; las
-imágenes base compartidas (`postgres`, `ollama`) y `/opt/anomalia/certs` se conservan.
-Detalle en `specs/009-platform-support-and-prerequisites.md` §7.
+Compose v1/v2 con los mismos facts que el deploy), retira el aislamiento L4 de los
+puertos de lectura (unit `anomalia-victoria-firewall`, cadena iptables
+`ANOMALIA_VICTORIA_READ` con su salto en `INPUT`, y rich rules de firewalld), y
+también las unidades systemd **derivadas** `anomalia-vmalert-*.service` (por-tenant)
+detectadas por `find`, sin hardcodear slugs. Las imágenes y volúmenes se borran solo
+si pertenecen a los proyectos compose de Anomalia; las imágenes base compartidas
+(`postgres`, `ollama`) y `/opt/anomalia/certs` se conservan. Detalle en
+`specs/009-platform-support-and-prerequisites.md` §7.
 
 **Nota:** El asistente NO debe ejecutar estos comandos automáticamente. El usuario es responsable de ejecutarlos cuando lo considere necesario. Los cambios solo en documentación (`docs/`, `specs/`, `AGENTS.md`) no requiren repliegue.
 

@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/vtinsert {%- for host in groups['vt_storage_nodes'] %} -storageNode={{ hostvars[host].vtstorage_ip | default(hostvars[host].ansible_host) | default('127.0.0.1') }}:{{ hostvars[host].vtstorage_port | default('8492') }}{% endfor %} -httpListenAddr={{ vtinsert_ip | default(ansible_host) | default('127.0.0.1') }}:{{ vtinsert_port | default('8490') }}
+ExecStart=/usr/local/bin/vtinsert {%- for host in groups.get('vt_storage_nodes', []) %} -storageNode={{ hostvars[host].vtstorage_ip | default(hostvars[host].ansible_host) | default('127.0.0.1') }}:{{ hostvars[host].vtstorage_port | default('8492') }}{% endfor %} -httpListenAddr={{ vtinsert_ip | default(ansible_host) | default('127.0.0.1') }}:{{ vtinsert_port | default('8490') }}
 Restart=always
 
 [Install]

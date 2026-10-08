@@ -5,3 +5,8 @@
     daemon_reload: yes
     state: restarted
     enabled: yes
+  register: vmalert_restart_result
+  failed_when: >
+    vmalert_restart_result.failed and
+    ('could not find the requested service' not in (vmalert_restart_result.msg | lower | default(''))) and
+    ('does not exist' not in (vmalert_restart_result.msg | lower | default('')))

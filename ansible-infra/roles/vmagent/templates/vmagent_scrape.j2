@@ -3,7 +3,7 @@ scrape_configs:
   - job_name: 'vm-storage'
     static_configs:
       - targets:
-        {% for host in groups['vm_storage_nodes'] %}
+        {% for host in groups.get('vm_storage_nodes', []) %}
           - '{{ hostvars[host].vmstorage_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vmstorage_port | default("8402") }}'
         {% endfor %}
 {% endif %}
@@ -11,7 +11,7 @@ scrape_configs:
   - job_name: 'vm-insert'
     static_configs:
       - targets:
-        {% for host in groups['vm_insert_nodes'] %}
+        {% for host in groups.get('vm_insert_nodes', []) %}
           - '{{ hostvars[host].vminsert_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vminsert_port | default("8400") }}'
         {% endfor %}
 {% endif %}
@@ -19,7 +19,7 @@ scrape_configs:
   - job_name: 'vm-select'
     static_configs:
       - targets:
-        {% for host in groups['vm_select_nodes'] %}
+        {% for host in groups.get('vm_select_nodes', []) %}
           - '{{ hostvars[host].vmselect_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vmselect_port | default("8401") }}'
         {% endfor %}
 {% endif %}
@@ -27,7 +27,7 @@ scrape_configs:
   - job_name: 'vlogs-storage'
     static_configs:
       - targets:
-        {% for host in groups['vlogs_storage_nodes'] %}
+        {% for host in groups.get('vlogs_storage_nodes', []) %}
           - '{{ hostvars[host].vlstorage_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vlstorage_port | default("8482") }}'
         {% endfor %}
 {% endif %}
@@ -35,7 +35,7 @@ scrape_configs:
   - job_name: 'vlogs-insert'
     static_configs:
       - targets:
-        {% for host in groups['vlogs_insert_nodes'] %}
+        {% for host in groups.get('vlogs_insert_nodes', []) %}
           - '{{ hostvars[host].vlinsert_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vlinsert_port | default("8480") }}'
         {% endfor %}
 {% endif %}
@@ -43,7 +43,7 @@ scrape_configs:
   - job_name: 'vlogs-select'
     static_configs:
       - targets:
-        {% for host in groups['vlogs_select_nodes'] %}
+        {% for host in groups.get('vlogs_select_nodes', []) %}
           - '{{ hostvars[host].vlselect_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vlselect_port | default("8481") }}'
         {% endfor %}
 {% endif %}
@@ -51,7 +51,7 @@ scrape_configs:
   - job_name: 'vt-storage'
     static_configs:
       - targets:
-        {% for host in groups['vt_storage_nodes'] %}
+        {% for host in groups.get('vt_storage_nodes', []) %}
           - '{{ hostvars[host].vtstorage_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vtstorage_port | default("8492") }}'
         {% endfor %}
 {% endif %}
@@ -59,7 +59,7 @@ scrape_configs:
   - job_name: 'vt-insert'
     static_configs:
       - targets:
-        {% for host in groups['vt_insert_nodes'] %}
+        {% for host in groups.get('vt_insert_nodes', []) %}
           - '{{ hostvars[host].vtinsert_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vtinsert_port | default("8490") }}'
         {% endfor %}
 {% endif %}
@@ -67,7 +67,7 @@ scrape_configs:
   - job_name: 'vt-select'
     static_configs:
       - targets:
-        {% for host in groups['vt_select_nodes'] %}
+        {% for host in groups.get('vt_select_nodes', []) %}
           - '{{ hostvars[host].vtselect_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vtselect_port | default("8491") }}'
         {% endfor %}
 {% endif %}
@@ -75,7 +75,7 @@ scrape_configs:
   - job_name: 'pyroscope'
     static_configs:
       - targets:
-        {% for host in groups['pyroscope_nodes'] %}
+        {% for host in groups.get('pyroscope_nodes', []) %}
           - '{{ hostvars[host].pyroscope_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].pyroscope_port | default("4040") }}'
         {% endfor %}
 {% endif %}
@@ -83,7 +83,7 @@ scrape_configs:
   - job_name: 'vmauth'
     static_configs:
       - targets:
-        {% for host in groups['vmauth_nodes'] %}
+        {% for host in groups.get('vmauth_nodes', []) %}
           - '{{ hostvars[host].vmauth_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vmauth_server_port | default("8427") }}'
         {% endfor %}
 {% endif %}
@@ -91,7 +91,7 @@ scrape_configs:
   - job_name: 'vmagent'
     static_configs:
       - targets:
-        {% for host in groups['vmagent_nodes'] %}
+        {% for host in groups.get('vmagent_nodes', []) %}
           - '{{ hostvars[host].vmagent_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vmagent_port | default("8429") }}'
         {% endfor %}
 {% endif %}
@@ -99,7 +99,7 @@ scrape_configs:
   - job_name: 'alertmanager'
     static_configs:
       - targets:
-        {% for host in groups['alertmanager_nodes'] %}
+        {% for host in groups.get('alertmanager_nodes', []) %}
           - '{{ hostvars[host].alertmanager_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].alertmanager_port | default("9093") }}'
         {% endfor %}
 {% endif %}
@@ -107,7 +107,7 @@ scrape_configs:
   - job_name: 'vmalert'
     static_configs:
       - targets:
-        {% for host in groups['vmalert_nodes'] %}
+        {% for host in groups.get('vmalert_nodes', []) %}
           - '{{ hostvars[host].vmalert_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].vmalert_port | default("8880") }}'
         {% endfor %}
 {% endif %}
@@ -115,7 +115,7 @@ scrape_configs:
   - job_name: 'parses-service'
     static_configs:
       - targets:
-        {% for host in groups['parses_nodes'] %}
+        {% for host in groups.get('parses_nodes', []) %}
           - '{{ hostvars[host].parses_ip | default(hostvars[host].ansible_host) | default("127.0.0.1") }}:{{ hostvars[host].parses_port | default(8090) }}'
         {% endfor %}
 {% endif %}

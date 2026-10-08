@@ -3,9 +3,9 @@
 # =====================================================================
 
 # 1. Obtenemos el nodo, puerto e IP específica definida en el inventario para vmauth
-backend_vmauth_node: "{{ groups['vmauth_nodes'][0] }}"
-backend_vmauth_ip: "{{ hostvars[backend_vmauth_node].vmauth_ip | default('127.0.0.1') }}"
-backend_vmauth_port: "{{ hostvars[backend_vmauth_node].vmauth_port | default('8427') }}"
+backend_vmauth_node: "{{ groups.get('vmauth_nodes', []) | first | default('') }}"
+backend_vmauth_ip: "{{ '127.0.0.1' if not backend_vmauth_node else hostvars[backend_vmauth_node].vmauth_ip | default('127.0.0.1') }}"
+backend_vmauth_port: "{{ '8427' if not backend_vmauth_node else hostvars[backend_vmauth_node].vmauth_port | default('8427') }}"
 
 # 2. Asignación directa a la IP real de escucha (ej. 192.168.1.27) 
 backend_vmauth_base_url: "http://{{ backend_vmauth_ip }}:{{ backend_vmauth_port }}"

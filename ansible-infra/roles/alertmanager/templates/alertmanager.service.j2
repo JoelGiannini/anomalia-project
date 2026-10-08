@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 User=root
-ExecStart=/usr/local/bin/alertmanager --config.file=/etc/anomalia/alertmanager/alertmanager.yml --storage.path={{ alertmanager_storage_path }} --web.listen-address=0.0.0.0:9093 --cluster.listen-address=0.0.0.0:9094 {%- for host in groups['alertmanager_nodes'] %}{%- if host != inventory_hostname %} --cluster.peer={{ hostvars[host].ansible_host | default('127.0.0.1') }}:9094{%- endif %}{%- endfor %}
+ExecStart=/usr/local/bin/alertmanager --config.file=/etc/anomalia/alertmanager/alertmanager.yml --storage.path={{ alertmanager_storage_path }} --web.listen-address=0.0.0.0:9093 --cluster.listen-address=0.0.0.0:9094 {%- for host in groups.get('alertmanager_nodes', []) %}{%- if host != inventory_hostname %} --cluster.peer={{ hostvars[host].ansible_host | default('127.0.0.1') }}:9094{%- endif %}{%- endfor %}
 
 Restart=always
 

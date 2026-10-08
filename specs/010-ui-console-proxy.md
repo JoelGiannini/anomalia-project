@@ -448,6 +448,17 @@ como `read_url + "/" + path`: la ruta que llega ya es la ruta correcta respecto 
 `dashboards` no está en el mapa: `redeem_ui_ticket` lo detecta por el `scope` y
 redirige a `/ui/{ticket}/` (raíz del ticket), que es donde Perses se monta.
 
+**Consolas de administración (`scope vmalert` y `scope alertmanager_global`, spec
+011 §5.7).** Se sirven en `proxy_ui` con la rama `elif admin_console: pass`: se
+devuelven **verbatim**, sin `_rewrite_base_href` ni scoping de Victoria. Ambas
+están montadas en la raíz de su servicio (`/`), sus assets son relativos y
+resuelven bajo `/ui/{ticket}/`. No existe un `datasource` (`ds`) asociado a ellas:
+la rama `else` (que referencia `ds` y filtra `ADMIN_TENANTS_PATH`) está reservada a
+las consolas de visualización con tenant `ds` resuelto, e intentar aplicarla aquí
+lanzaba `UnboundLocalError: local variable 'ds' referenced before assignment`
+→ 500 en "Abrir vmalert" y "Abrir Alertmanager" (corregido en
+`ui_proxy_router.py:1440`).
+
 ## 10. Esquema
 
 ```sql

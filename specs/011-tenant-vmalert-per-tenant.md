@@ -13,7 +13,7 @@ Alcance: Alta/gestión de tenants con ciclo de vida completo: slug automático �
 - account_id/project_id únicos entre activos; reutilizables tras hard-delete+limpieza (solo cuando no existan referencias activas). 
 - Puertos dinámicos + mapeo (host_port único por nodo/host). 
 - Reglas YAML: BD (`tenant_vmalert_instances.rules_yaml`) como fuente de verdad; materializadas en el nodo en `/etc/anomalia/vmalert/<tenant_slug>/alert_rules.yml` (rules_path). 
-- Reload: HTTP /-/reload por instancia vmalert. 
+- Reload: HTTP /-/reload por instancia vmalert. Healthcheck previo GET /health (vmalert responde 400 a /-/health "unsupported path requested"; /-/health es de vmauth/vmagent). 
 - Aislamiento tenant→instancia: validación estricta. Prohibido cross-tenant. 
 - Alertmanager UI global vía ticket (scope alertmanager_global): requiere perfil alerts_manager (administración). TTL corto, audit, rate-limit. 
 - vmalert UI por tenant vía ticket (scope vmalert por tenant). 
@@ -156,7 +156,7 @@ Notas: operaciones largas → 202 Accepted + job_id + GET /api/v1/admin/jobs/{jo
 ## 4. Ansible (dual-mode) — F4
 
 ### 4.1 Principios dual-mode
-- Flag explícito `vmalert_per_tenant: false` (default) para preservar modo single-vmalert actual (P2).
+- Flag explícito `vmalert_per_tenant: false` (default del rol) para preservar modo single-vmalert actual (P2). **Implementado:** `deploy-infra.yml` fuerza `vmalert_per_tenant: true` al invocar el rol `vmalert`, así el deploy base siempre aplica la convergencia por-tenant (limpieza de unit single, §4.8) y el rol solo crea la unit single cuando el flag es `false` (sin ventana de creación+borrado en deploy limpio).
 - Si `vmalert_instances` (lista por tenant) está definida y no vacía → **modo por-tenant** (1:1). Si no → **modo single** (comportamiento actual).
 - Dual-mode debe ser retrocompatible: ningún cambio rompe despliegue existente.
 - Backend invoca Ansible **dirigido** pasando `--extra-vars` con `vmalert_instances` (orquestación async). No requiere editar inventory.ini para operaciones por tenant.
@@ -164,6 +164,7 @@ Notas: operaciones largas → 202 Accepted + job_id + GET /api/v1/admin/jobs/{jo
 ### 4.2 Modo por-tenant: vmalert (1:1)
 - Unidad systemd por instancia: `anomalia-vmalert-<tenant_slug>.service` (unit_name persistido en DB).
 - Reglas por tenant: BD `rules_yaml` como fuente de verdad → materializadas en `/etc/anomalia/vmalert/<tenant_slug>/alert_rules.yml` (rules_path) por el deploy o por el job `sync_rules`. Copia vía `ansible.builtin.copy` con `src` (archivo temporal provisto por el worker vía `vmalert_rules_files`), nunca `content`, para no evaluar Jinja sobre PromQL `{{ }}`. Directorio creado con permisos correctos.
+- **Canal separado de reglas (fix espec 011 §4.2):** el `rules_yaml` **no** viaja dentro de los dicts de `vmalert_instances`. Ansible templa recursivamente una variable cuando aparece en cualquier `when` del playbook (ej. `install-binaries.yml` §4b: `when: vmalert_instances is defined and vmalert_instances | length > 0`), y un `{{ $labels.job }}` anidado rompía la tarea con `AnsibleError: unexpected char '$'` (falla determinista observada en el deploy de los tenants internos). Por eso el worker pasa las reglas por el parámetro aparte `vmalert_rules` (lista `{tenant_slug, rules_yaml, rules_path}` → extra-var `vmalert_rules_files` con rutas a archivos temporales), y `vmalert_instances` queda solo con datos planos (slug, port, urls, rules_path).
 - Puerto dinámico: `--httpListenAddr=:<port>` (host_port desde port_mapping, único por instancia/nodo).
 - Targets Victoria/Alertmanager: parametrizados desde inventario dinámico o estático. `-evaluationInterval` configurable.
 - Templates: `vmalert.service.j2` debe soportar iteración por `item` (instancia) en modo por-tenant; mantener ruta single cuando no iterando.
@@ -184,30 +185,41 @@ Notas: operaciones largas → 202 Accepted + job_id + GET /api/v1/admin/jobs/{jo
 - Mantener dual-awareness (si `tenants_active` pasado vía extra-vars; el regen flat usa `infra_components`).
 
 ### 4.5 Puertos dinámicos + mapeo (port_mapping)
-- Rango reservado `vmalert_port_range_start/end` configurable (defaults razonables). 
+- **Puerto determinístico por tenant:** cada tenant usa `8880 + tenant_id` (METRICS=8881, TRACES=8882, AUDIT_LOGS=8884, ...; **PROFILES queda libre**: no lleva vmalert, §4.6). Es idempotente y elimina la carrera entre workers concurrentes (spec 013); el deploy **fuerza siempre** ese puerto en `tenants.vmalert_port` y, si otro tenant ya ocupa el puerto en el mismo nodo, cae al pool por-tenant como fallback defensivo.
+- **el 8880 queda reservado a la unit single** (`anomalia-vmalert.service`). Los 4 tenants default ocupan 8881-8884.
+- **Reconciliación al arranque (`_bootstrap_internal`):** si `tenants.vmalert_port` (o el puerto de instancia) difiere de `8880+tenant_id` (colisión histórica 8881/8881, puerto heredado del pool), se corrige la BD y se encola `vmalert_redeploy` si la instancia está desplegada; confluencia automática sin intervención manual.
 - Asignación transaccional: reservar host_port único por `(instance_id/nodo, host_port)`. Registrar en `port_mapping` (tenant_id, service='vmalert', purpose='tenant_vmalert', creado con expires_at null).
 - Liberar puerto en **hard-delete** (paso deleted_cleanup). Reutilizar puertos liberados de instancias eliminadas.
 - Balanceo automático = **menor nº instancias activas** por nodo (`tenants_count_active` denorm). Lock + recálculo tras asignación/desasignación.
 
 ### 4.6 Invocación dirigida desde backend
 - Backend crea `job_state` (persistente Postgres P1-A) y ejecuta `ansible-playbook` con `--extra-vars @json` conteniendo `vmalert_instances`, `infra_mode`, `action` (deploy_tenant_vmalert/undeploy_tenant_vmalert/reload/redeploy), `tenant_id`, `tenant_slug`, `org_id_upper`.
+- **Timeout del playbook:** `VMALERT_PLAYBOOK_TIMEOUT_SECONDS` (default 600, env-overridable). El primer deploy en frío tarda ~5 min; un límite de 300s hardcodeado mató el deploy de METRICS antes de crear la unit (ver §4.9). Si el job expira, queda `failed` y la reconciliación periódica (§4.9) lo re-encola en <60s.
+- **Datasources cluster URL por-tenant:** vmselect/vminsert CLUSTER solo aceptan un segmento `<account>:<project>` (dos puntos): `--datasource.url`/`--remoteRead.url = http://<vmselect>:8401/select/0:0/prometheus` y `--remoteWrite.url = http://<vminsert>:8400/insert/0:0/prometheus`. La forma con barra (`/select/0/0/prometheus`) responde 400 (`unsupported path requested`), igual que las raíces desnudas (spec 008 §2, validado contra el binario v1.153.0-cluster). El worker resuelve la ds por-tenant (`_resolve_tenant_datasources`): **internos → store METRICS 0:0** (sus reglas canónicas consultan las métricas de stack que vmagent deposita en el tenant METRICS, aunque TRACES/AUDIT_LOGS tengan project propio 1/3); **no internos con account/project → su propio `account:project`**; fallback defensivo 0:0 + warning.
+- **Pyroscope NO lleva vmalert (type='profiles'):** los perfiles no son series PromQL y Pyroscope no expone una API compatible con Prometheus HTTP API (`/api/v1/query` → 404), requerimiento del `-datasource.url` de vmalert. El monitoreo básico de Pyroscope se hace sobre el store METRICS (reglas `PyroscopeDown`/`PyroscopeHeartbeatMissing` de `internal_rules/metrics.yaml`, evaluadas por el vmalert del tenant METRICS). El worker salta el deploy/sync/auto-placement para estos tenants, la reconciliación retira instancias residuales (undeploy + limpieza de `vmalert_node_id`/`vmalert_port`), y los endpoints `POST .../vmalert/deploy|redeploy` responden 400.
 - Respuesta 202 + job_id. Polling GET /api/v1/admin/jobs/{job_id}. Capturar stdout/stderr en job_state.logs_ref/result.
 
 ### 4.7 Hard-delete cleanup (deleted_cleanup)
 - Al completar hard-delete (confirm2 job tenant_delete): detener/deshabilitar unidad `anomalia-vmalert-<slug>.service`, borrar directorio `/etc/anomalia/vmalert/<tenant_slug>/` (YAML) (P4-A: borrar en deleted_cleanup), liberar host_port en `port_mapping`, actualizar `tenants_count_active` por nodo, quitar scrape vmagent, regenerar vmauth, actualizar `tenant_vmalert_instances`/estado, marcar tenant `deleted_cleanup` (o purgado) tras verificación referencias activas. Reutilización IDs tras limpieza.
 
 ### 4.8 Retrocompatibilidad (modo single)
-- Si `vmalert_per_tenant=false` o `vmalert_instances` vacío: roles mantienen rutas actuales (`/etc/anomalia/vmalert/alert_rules.yml`, `anomalia-vmalert.service` único). No tocan unidades existentes. Templates con condicionales `when: vmalert_instances is defined and vmalert_instances|length>0`.
+- Si `vmalert_per_tenant=false` (default del rol, solo vía invocación manual sin vars) y `vmalert_instances` vacío: roles mantienen rutas actuales (`/etc/anomalia/vmalert/alert_rules.yml`, `anomalia-vmalert.service` único). No tocan unidades existentes. Templates con condicionales `when: vmalert_instances is defined and vmalert_instances|length>0`.
+- **Flag forzado en el deploy (implementado):** `deploy-infra.yml` pasa `vars: vmalert_per_tenant: true` al rol `vmalert`. Con el flag en `true`, el bloque de limpieza/convergencia se ejecuta siempre (aunque `vmalert_instances` esté vacío) y la creación de la unit single queda condicionada a `not vmalert_per_tenant`: en instalación limpia **nunca se crea** el single, eliminando la ventana que lo creaba para borrarlo después (y con ella el estado `up==0` transitorio del rol).
+- **Paths cluster en la rama single:** `vmalert.service.j2` usa en ambas ramas (single y por-tenant) `--datasource.url`/`--remoteRead.url = /select/0:0/prometheus` y `--remoteWrite.url = /insert/0:0/prometheus` (§4.6): la forma con barra responde 400 en builds cluster.
+- **Convergencia en modo por-tenant:** cuando `vmalert_instances` no está vacío, el role también detiene/deshabilita y elimina la unit single `anomalia-vmalert.service` y su archivo plano `/etc/anomalia/vmalert/alert_rules.yml` (idempotente, tolera ausencia; el directorio `/etc/anomalia/vmalert/` se conserva porque aloja los subdirectorios por-tenant). Al volver a modo single (instancias vacías) se recrean.
+- **Convergencia por archivos en "Modo single":** aunque `vmalert_instances` esté vacío (ej. `deploy-infra.yml` sin extra-vars), el role detecta unidades `<node>/etc/systemd/system/anomalia-vmalert-*.service` con `find`; si existen por-tenant, **no crea el single** y aplica la misma limpieza (convergencia por estado del nodo, no solo por extra-vars). El single solo se crea en instalación limpia (sin unidades por-tenant) y con `vmalert_state=present`. El handler `Recargar systemd y reiniciar vmalert` es tolerante a unit ausente (`failed_when` con `msg | lower` permite `could not find the requested service`/`does not exist`): la unit puede desaparecer por un deploy por-tenant del worker entre el `notify` y el flush de handlers.
+- **Teardown por-tenant idempotente (spec 013):** `destroy-infra.yml` enumera con `find` las unidades derivadas `anomalia-vmalert-*.service` (cualquier slug) y las detiene, deshabilita y elimina **antes** del `daemon_reload`, sin hardcodear nombres. `deploy-infra.yml` solo ejecuta el role `vmalert` en hosts del grupo `vmalert_nodes`. El aprovisionamiento programático del worker (play `install-binaries.yml`, §4b) despliega instancias por-tenant únicamente en hosts de `vmalert_nodes`, salvo el caso ad-hoc del propio worker (`-i <ip>,`, `groups['all'] | length == 1`).
 
 ### 4.9 Tenants de control interno (reglas canónicas inmutables)
 - **Motivación:** los tenants default (METRICS, TRACES, PROFILES, AUDIT_LOGS) son el control interno de la app: cualquier fallo crítico en la infraestructura debe disparar alerta a Alertmanager. Su monitoreo no puede depender de edición manual.
 - **Flag `is_internal=true`:** seed de `init.sql.j2` (y backfill `database.py`) fuerza `has_alerts=true`, `is_internal=true`, `placement_mode='auto'` en cada deploy (ON CONFLICT UPDATE). No es editable por la API (no está en `TenantPayload`).
-- **Reglas canónicas en código (SSOT):** `backend/app/internal_rules/<slug>.yaml` (metrics=stack VictoriaMetrics+app, traces=VictoriaTraces, profiles=Pyroscope, audit-logs=VictoriaLogs). Deben ser archivos estáticos copiados **verbatim** (fuera de `roles/*/templates`, sin `template:` ni Jinja) para que las anotaciones `{{ $labels.* }}` lleguen intactas a vmalert; se validan con `yaml.safe_load` en el import (`internal_rules.py`).
+- **Reglas canónicas en código (SSOT):** `backend/app/internal_rules/<slug>.yaml` (metrics=stack VictoriaMetrics+app+salud de Pyroscope, traces=VictoriaTraces, audit-logs=VictoriaLogs). El tenant PROFILES **no tiene vmalert** (Pyroscope ≠ PromQL, §4.6), por lo que su salud se monitorea desde las reglas de `metrics.yaml` (mismas métricas scrapeadas por vmagent al store METRICS). Deben ser archivos estáticos copiados **verbatim** (fuera de `roles/*/templates`, sin `template:` ni Jinja) para que las anotaciones `{{ $labels.* }}` lleguen intactas a vmalert; se validan con `yaml.safe_load` en el import (`internal_rules.py`).
 - **Deploy canónico:** en `solo_deploy_vmalert`, si `is_internal=true` la instancia recibe **siempre** `INTERNAL_RULES[slug]` (pisa en cada deploy, incluso redeploy) y se persiste en `rules_yaml`. El único origen admisible es el código → inmutable por construcción.
-- **Bootstrap always-on (VmalertWorker.start → `_bootstrap_internal`):** idempotente; para cada tenant interno `status='active'` sin instancia `deployed` ni job `vmalert_deploy` queued/running: auto-placement (menor `tenants_count_active`, mismo criterio que §4.2), `has_alerts=true`, encola `vmalert_deploy` (cadena normal → regen). Cubre instalaciones previas y recuperación tras fallo.
+- **Bootstrap always-on (VmalertWorker.start → `_bootstrap_internal`):** idempotente; para cada tenant interno `status='active'` **que no sea `type='profiles'`** sin instancia `deployed` ni job `vmalert_deploy` queued/running: auto-placement (menor `tenants_count_active`, mismo criterio que §4.2), `has_alerts=true`, encola `vmalert_deploy` (cadena normal → regen). Cubre instalaciones previas y recuperación tras fallo. Para tenants `type='profiles'`, en cambio, retira cualquier instancia residual (encola `vmalert_undeploy` mientras exista `deployed` y limpia `vmalert_node_id`/`vmalert_port` cuando desaparece).
+- **Reconciliación periódica (§4.6):** `_bootstrap_internal` no corre solo al arrancar: un task dedicado (`_reconcile_loop`) lo repite cada `interval` del worker. Un deploy que falla después del bootstrap inicial (p. ej. timeout de playbook, §4.6) se re-encola automáticamente en <60s sin reiniciar contenedores; la misma pasada reconcilia deriva de puerto determinístico (§4.5). Los guards de idempotencia (instancia `deployed`, job queued/running, `succeeded`) evitan bucles de re-deploy.
 - **Bloqueos API (409):** `PUT .../vmalert/rules`, `DELETE /tenants/{id}` (borrado duro + soft) y `PASOS confirm1/confirm2` del hard-delete, y `POST .../vmalert/undeploy` sobre `is_internal=true`. Helper `_guard_internal_tenant`. Quedan permitidos: GET rules (visible), sync_rules, reload, deploy/redeploy y PUT genérico de tenant (campos no críticos).
 - **UI:** el editor de reglas se abre en solo-lectura (textarea `readOnly`, botones Guardar/Guardar+recargar deshabilitados) + badge "Control interno · reglas canónicas e inmutables".
-- **Overlap aceptado:** el vmalert single global (`up==0` genérico de `alert_rules.yml.j2`) sigue activo para todo el stack; las reglas internas por dominio cubren sus componentes con detalle, sin conflicto (ambas notifican a Alertmanager).
+- **Sin overlap en modo por-tenant:** al existir `vmalert_instances`, la unit single `anomalia-vmalert.service` no se despliega: el role la detiene, deshabilita y elimina (junto a su archivo plano `/etc/anomalia/vmalert/alert_rules.yml`), evitando el `up==0` genérico duplicado; las reglas internas por dominio cubren sus componentes con detalle. El single se recrea solo en modo single (sin instancias, §4.8).
 ## 5. Frontend
 ABM: placement manual/auto, nodo vmalert (si manual), has_alerts. 
 Estado provisioning/deleting/error. 
@@ -263,6 +275,11 @@ Reglas de aislamiento y seguridad:
   ticket, igual que Parses.
 - Ambas consolas son de **solo lectura**: se rechazan `PUT/PATCH/DELETE` (mismo criterio que las
   consolas de Victoria). No se inyecta `X-Scope-OrgID` ni scoping de Victoria.
+- **Servido verbatim (fix 500):** en `proxy_ui` estas consolas se sirven con la rama
+  `elif admin_console: pass` (sin `_rewrite_base_href` ni `_filter_admin_tenants`): no tienen
+  `datasource` (`ds`) asignado, y derivar el rewrite desde `ds` lanzaba
+  `UnboundLocalError` → 500 en ambas consolas (spec 010 §9). Sus assets son relativos y
+  resuelven bajo `/ui/{ticket}/`.
 - Guardas de ruta: se reutiliza `_reject_path_traversal` (`://` y `..` prohibidos). El prefijo
   siempre lo compone el servidor a partir del upstream resuelto; el cliente nunca elige destino.
 - Sesión: con cookie, `_authorize_session` compara `tenant_id` del ticket (NULL en el scope
@@ -294,6 +311,40 @@ Contrato de la petición de ticket:
 - Los `HTTPException` levantados dentro de un `try` se reenvían con su status original (`except HTTPException: raise`); el `except Exception` genérico no debe capturarlos (evita 400 con detalle duplicado "400: 404: ...").
 - Los args de `cursor.execute` con un solo valor llevan coma: `(tenant_id,)`; sin coma psycopg2 recibe un int y falla con `TypeError: 'int' object does not support indexing`.
 - `_node_base_url(ip, port, default_port)` recibe 3 args: en `_resolve_alertmanager_upstream` el fallback es `service_ip or ip_address`, no 4 args posicionales.
+
+## 6d. Event loop y transacciones (anti-deadlock)
+
+**Contexto (incidencia real):** el worker mantenía una transacción psycopg2 abierta durante
+`await _run_ansible_vmalert` (playbook `install-binaries.yml`, minutos), `init_db()` (DDL de arranque
+en el otro contenedor del gateway) quedaba encolado tras el primer lock y `_bootstrap_internal` —
+corriendo síncrono en el event loop— congelaba uvicorn: el socket TCP aceptaba pero devolvía 0 bytes
+(web colgada, `pg_stat_activity` con backends en `idle in transaction`/esperando lock).
+
+Mitigaciones obligatorias:
+
+- **Transacciones cortas (workers):** ninguna operación psycopg2 abierta cruza un `await` de I/O
+  externa (Ansible, HTTP). Los processors se dividen en `*_load`/`*_persist` síncronos ejecutados con
+  `asyncio.to_thread`: `vmalert_worker` (`_bootstrap_internal_sync`, `_deploy_load/_deploy_persist`,
+  `_undeploy_load/_undeploy_persist`, `_reload_load`, `_sync_rules_load`, `_regen_scrapes_load`,
+  `_allocate_vmalert_port`, `_get_*_url`, `_resolve_tenant_datasources`, `_enqueue_job`,
+  `_update_progress_sync`) y `tenant_worker` (`_tenant_create_sync`, `_tenant_delete_sync`,
+  `_parses_collect_users`, `_seed_*`, `_select_vmalert_node_auto`, `_update_progress_sync`).
+- **Claim de jobs en hilo:** `base._process_pending_jobs` ejecuta
+  `await asyncio.to_thread(self._claim_jobs)` (SELECT ... `FOR UPDATE SKIP LOCKED` + UPDATE, transacción
+  corta con conexión propia); `_set_job_running/succeeded/failed` igual vía `to_thread`.
+- **Endpoints async con DB:** todo `async def` que toca psycopg2 delega en `asyncio.to_thread`
+  (`_parses_provision_catchup._collect_usernames`, `_enrich_and_persist_alerts` del webhook de
+  Alertmanager —IA incluida, ya que `provider.generate` bloquea—, `_update_user_theme_sync`,
+  `_proxy_prepare` del UI proxy, fase de autorización de `proxy_ui`). Los endpoints `def` ya corren en
+  el threadpool de FastAPI. Barrido AST verificable: ninguna `async def` ejecuta `get_db_connection` /
+  `cursor.execute` en su propio cuerpo (solo en helpers delegados).
+- **Límites de espera (`database.get_db_connection`):** `connect_timeout=10` y
+  `options="-c lock_timeout=15s"` en ambas rutas de conexión: un lock contendido falla en ≤15 s
+  (`LockNotAvailable`, subclase de `OperationalError`) en lugar de esperar infinito.
+- **`init_db` con advisory lock + retry:** `SELECT pg_advisory_lock(0x414E4F4D)` serializa el DDL de
+  arranque entre los dos contenedores del gateway; ante `lock timeout`/`deadlock detected` reintenta
+  5 veces con backoff (`attempt*2`); el DDL vive en `_init_db_ddl(conn, cursor, hash_password_func)`.
+  Cualquier otro error conserva el comportamiento previo (`print` + return, no bloquea el arranque).
 ## 6. Seguridad/validación
 tenant→instancia validado en deps/proxy. X-Scope-OrgID inyectado solo válido. Puertos dinámicos acotados por pool. Path traversal mitigado por slug validado. Audit hard-delete 2-step. Rate-limit + TTL tickets global. 
 
@@ -322,7 +373,8 @@ tenant→instancia validado en deps/proxy. X-Scope-OrgID inyectado solo válido.
 | Race balanceo | Transacción + lock + `tenants_count_active` denorm + menor nº instancias activas (P3 placement auto). |
 | Puertos conflicto | Pool dinámico + reserva transaccional + UNIQUE(instance_id,host_port), reutilización tras cleanup. |
 | Reload YAML inválido | Validación sintáctica previa, checksum, backup lógico, timeout + healthcheck + retry. |
-| Dual-mode drift | Flag explícito `vmalert_per_tenant` default false (P2), condicionales + detección por `vmalert_instances`, retrocompat. |
+| Dual-mode drift | Flag explícito `vmalert_per_tenant` default false (P2), condicionales + detección por `vmalert_instances`, retrocompat. **Implementado:** `deploy-infra.yml` fuerza `true`; single solo se crea con flag `false` (§4.1/§4.8). |
+| Deadlock Postgres → event loop congelado | Transacciones cortas + `lock_timeout=15s` + `connect_timeout=10` + advisory lock en `init_db` + todo psycopg2 en workers/endpoints async delegado a `asyncio.to_thread` (§6d). |
 | Fuga tenant→instancia | Validación estricta en deps/proxy (nunca params cliente), scope ticket por tenant, middleware org_id_upper. |
 | Alertmanager_global abuso | Requiere perfil `alerts_manager` (P5), TTL corto, rate-limit, audit, one-time ticket. |
 | Pérdida estado jobs | `job_state` persistente en Postgres (P1-A), idempotency, timeout, recovery. |

@@ -97,6 +97,9 @@
     # =====================================================================
     # Servicios systemd de los backends Victoria
     # =====================================================================
+    # Tolerar unidades ausentes (unit single vmalert no existe en modo
+    # por-tenant; en topología flexible cada host solo tiene "sus" units):
+    # solo falla ante errores reales de systemd (spec 013 §2.5).
     - name: Detener y deshabilitar servicios de systemd de Anomalia
       systemd:
         name: "{{ item }}"
@@ -117,7 +120,11 @@
         - anomalia-vmagent
         - anomalia-alertmanager
         - anomalia-vmalert
-      ignore_errors: yes
+      register: destroy_svc_stop
+      failed_when: >
+        destroy_svc_stop.failed and
+        ('could not find the requested service' not in (destroy_svc_stop.msg | lower | default(''))) and
+        ('does not exist' not in (destroy_svc_stop.msg | lower | default('')))
 
     - name: Eliminar archivos de servicios de systemd
       file:
@@ -138,6 +145,35 @@
         - anomalia-vmagent
         - anomalia-alertmanager
         - anomalia-vmalert
+
+    # =====================================================================
+    # vmalert POR TENANT: unidades derivadas (anomalia-vmalert-<slug>.service).
+    # Se descubren por 'find' para tolerar cualquier slug futuro sin hardcodear
+    # nombres (spec 011 / spec 013). Idempotente: no op si no hay ninguna.
+    # =====================================================================
+    - name: Enumerar unidades vmalert por-tenant para el teardown
+      ansible.builtin.find:
+        paths: /etc/systemd/system
+        patterns: "anomalia-vmalert-*.service"
+      register: vmalert_pt_units_teardown
+
+    - name: Detener y deshabilitar unidades vmalert por-tenant
+      ansible.builtin.systemd:
+        name: "{{ item.path | basename }}"
+        state: stopped
+        enabled: no
+      loop: "{{ vmalert_pt_units_teardown.files }}"
+      register: destroy_vmalert_pt_stop
+      failed_when: >
+        destroy_vmalert_pt_stop.failed and
+        ('could not find the requested service' not in (destroy_vmalert_pt_stop.msg | lower | default(''))) and
+        ('does not exist' not in (destroy_vmalert_pt_stop.msg | lower | default('')))
+
+    - name: Eliminar archivos de servicios vmalert por-tenant
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ vmalert_pt_units_teardown.files }}"
 
     - name: Recargar el daemon de systemd para aplicar cambios
       systemd:

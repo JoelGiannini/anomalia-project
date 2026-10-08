@@ -11,9 +11,9 @@ Los tenants de control interno (`is_internal = true`) garantizan que la infraest
 En una plataforma de observabilidad de nivel empresarial, los componentes críticos del stack (métricas generales, trazas, perfiles de rendimiento y registros de auditoría) deben contar con alertas críticas nativas e inquebrantables. 
 
 Para lograr esto, Anomalia define cuatro dominios internos protegidos:
-- **`METRICS`** (`type = "metrics"`): Supervisión general de VictoriaMetrics y salud del backend.
+- **`METRICS`** (`type = "metrics"`): Supervisión general de VictoriaMetrics, salud del backend **y salud de Pyroscope** (sus reglas `PyroscopeDown`/`PyroscopeHeartbeatMissing` viven en `internal_rules/metrics.yaml`).
 - **`TRACES`** (`type = "logs" / "traces"`): Disponibilidad y latencia de VictoriaTraces.
-- **`PROFILES`** (`type = "profiles"`): Salud de Pyroscope y recolección de perfiles de CPU/Memoria.
+- **`PROFILES`** (`type = "profiles"`): Salud de Pyroscope y recolección de perfiles de CPU/Memoria. **No lleva instancia vmalert**: los perfiles no son series PromQL consultables por vmalert (Pyroscope no expone API compatible con Prometheus HTTP API), por lo que su monitoreo básico se hace desde el store METRICS.
 - **`AUDIT_LOGS`** (`type = "logs"`): Integridad y flujo de VictoriaLogs y pistas de auditoría.
 
 ---
@@ -42,10 +42,11 @@ Estos archivos se cargan mediante validación `yaml.safe_load` y se inyectan **v
 
 ### Flujo de Bootstrap y Despliegue (*Always-On*)
 
-1. **Arranque del Worker (`VmalertWorker._bootstrap_internal`):**
-   - Al iniciar el ciclo del worker, se escanean los tenants activos con `is_internal=true`.
-   - Si no poseen una instancia vmalert activa (`status='deployed'`) ni un trabajo en cola, el sistema selecciona automáticamente el nodo con menor carga (`capacity_slots` / `tenants_count_active`).
-   - Se encola un trabajo de tipo `vmalert_deploy` aplicando la regla canónica correspondiente.
+1. **Reconciliación periódica (`_bootstrap_internal` + `_reconcile_loop`):**
+   - Al arrancar el worker (`VmalertWorker._bootstrap_internal`) y **después cada `interval`** (`_reconcile_loop`, spec 011 §4.9) se escanean los tenants activos con `is_internal=true`.
+   - Si no poseen una instancia vmalert activa (`status='deployed'`) ni un trabajo `vmalert_deploy` queued/running, el sistema selecciona automáticamente el nodo con menor carga (`capacity_slots` / `tenants_count_active`).
+   - Se encola un trabajo de tipo `vmalert_deploy` aplicando la regla canónica correspondiente. Un deploy que falle después del arranque (por ejemplo, timeout del playbook, `VMALERT_PLAYBOOK_TIMEOUT_SECONDS` default 600) se **re-encola solo** en <60s.
+   - La misma pasada reconcilia el **puerto determinístico** por tenant (`8880 + tenant_id`) y los datasources internos usan **cluster URL** en formato `account:project` (dos puntos): `http://<vmselect>:8401/select/0:0/prometheus` y `http://<vminsert>:8400/insert/0:0/prometheus`. La forma con barra (`/select/0/0/prometheus`) responde 400. El tenant PROFILES queda fuera del always-on (no lleva vmalert); si persiste una instancia residual, la reconciliación la retira.
 
 2. **Inmutabilidad:**
    - Si un operador intenta modificar las reglas mediante `PUT /api/v1/admin/tenants/{id}/vmalert/rules`, la API responde con un código **`409 Conflict`** indicando que el tenant es de control interno.

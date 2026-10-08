@@ -50,9 +50,9 @@
             status_code: 200
             body_format: json
             timeout: 30
-            retries: 3
-            delay: 5
           register: vlogs_release
+          retries: 3
+          delay: 5
 
         - name: Extraer URL de descarga para VictoriaLogs
           set_fact:
@@ -71,8 +71,8 @@
             url: "{{ vlogs_download_url }}"
             dest: "{{ tmp_dir }}/victorialogs.tar.gz"
             timeout: 180
-            retries: 3
-            delay: 5
+          retries: 3
+          delay: 5
 
         - name: Extraer binarios de VictoriaLogs
           unarchive:
@@ -127,9 +127,9 @@
             status_code: 200
             body_format: json
             timeout: 30
-            retries: 3
-            delay: 5
           register: vm_release
+          retries: 3
+          delay: 5
 
         - name: Extraer URL de descarga para VictoriaMetrics Cluster
           set_fact:
@@ -148,8 +148,8 @@
             url: "{{ vmcluster_download_url }}"
             dest: "{{ tmp_dir }}/vmcluster.tar.gz"
             timeout: 180
-            retries: 3
-            delay: 5
+          retries: 3
+          delay: 5
 
         - name: Extraer binarios de VictoriaMetrics Cluster
           unarchive:
@@ -204,9 +204,9 @@
             status_code: 200
             body_format: json
             timeout: 30
-            retries: 3
-            delay: 5
           register: vt_release
+          retries: 3
+          delay: 5
 
         - name: Extraer URL de descarga para VictoriaTraces
           set_fact:
@@ -225,8 +225,8 @@
             url: "{{ vtcluster_download_url }}"
             dest: "{{ tmp_dir }}/vtcluster.tar.gz"
             timeout: 180
-            retries: 3
-            delay: 5
+          retries: 3
+          delay: 5
 
         - name: Extraer binarios de VictoriaTraces
           unarchive:
@@ -281,9 +281,9 @@
             status_code: 200
             body_format: json
             timeout: 30
-            retries: 3
-            delay: 5
           register: vmutils_release
+          retries: 3
+          delay: 5
 
         - name: Extraer URL de descarga para vmutils
           set_fact:
@@ -302,8 +302,8 @@
             url: "{{ vmutils_download_url }}"
             dest: "{{ tmp_dir }}/vmutils.tar.gz"
             timeout: 180
-            retries: 3
-            delay: 5
+          retries: 3
+          delay: 5
 
         - name: Extraer binarios de vmutils
           unarchive:
@@ -351,10 +351,17 @@
     # ==========================================
     # 4b. vmalert POR TENANT (dual-mode, specs 011/012)
     # ==========================================
+    # Se despliega SOLO en hosts del grupo vmalert_nodes (topología flexible,
+    # spec 013). Excepción: el worker del backend corre este play ad-hoc con
+    # `-i <ip>,` (grupos vacíos, `groups['all'] | length == 1`) por lo que ese
+    # caso se admite igualmente para mantener el aprovisionamiento programático.
     - name: Desplegar unidades vmalert por tenant
       ansible.builtin.include_role:
         name: vmalert
-      when: vmalert_instances is defined and vmalert_instances | length > 0
+      when: >
+        vmalert_instances is defined and vmalert_instances | length > 0 and
+        (inventory_hostname in groups.get('vmalert_nodes', []) or
+         groups.get('all', []) | length == 1)
 
     # ==========================================
     # 5. PYROSCOPE
@@ -368,9 +375,9 @@
             status_code: 200
             body_format: json
             timeout: 30
-            retries: 3
-            delay: 5
           register: pyroscope_release
+          retries: 3
+          delay: 5
 
         - name: Extraer URL de descarga para Pyroscope
           set_fact:
@@ -387,8 +394,8 @@
             url: "{{ pyroscope_download_url }}"
             dest: "{{ tmp_dir }}/pyroscope.tar.gz"
             timeout: 180
-            retries: 3
-            delay: 5
+          retries: 3
+          delay: 5
 
         - name: Extraer Pyroscope
           unarchive:
@@ -426,9 +433,9 @@
             status_code: 200
             body_format: json
             timeout: 30
-            retries: 3
-            delay: 5
           register: alertmanager_release
+          retries: 3
+          delay: 5
 
         - name: Extraer URL de descarga para Alertmanager
           set_fact:
@@ -446,8 +453,8 @@
             url: "{{ alertmanager_download_url }}"
             dest: "{{ tmp_dir }}/alertmanager.tar.gz"
             timeout: 180
-            retries: 3
-            delay: 5
+          retries: 3
+          delay: 5
 
         - name: Extraer Alertmanager
           unarchive:

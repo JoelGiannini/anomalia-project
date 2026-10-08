@@ -47,15 +47,27 @@ class BaseWorker(ABC):
 
     async def _process_pending_jobs(self):
         """Fetch and process pending jobs."""
+        jobs = await asyncio.to_thread(self._claim_jobs)
+        for job_id, job_type, ref_id in jobs:
+            await self._execute_job(job_id, job_type, ref_id, {})
+
+    def _claim_jobs(self) -> list:
+        """Reclama jobs queued en una transaccion corta (spec 011 4.2).
+
+        Corre en thread (asyncio.to_thread): una espera de lock aqui no debe
+        congelar el event loop de uvicorn.
+        """
+        if not self.job_types:
+            return []
         conn = get_db_connection()
         cursor = conn.cursor()
         try:
             placeholders = ','.join(['%s'] * len(self.job_types))
             cursor.execute(
-                f"""
+                """
                 SELECT id, type, ref_id
                 FROM job_state
-                WHERE type IN ({placeholders})
+                WHERE type IN (""" + placeholders + """)
                   AND status = 'queued'
                 ORDER BY created_at ASC
                 FOR UPDATE SKIP LOCKED
@@ -72,44 +84,62 @@ class BaseWorker(ABC):
                     ([j[0] for j in jobs],)
                 )
                 conn.commit()
-            for job_id, job_type, ref_id in jobs:
-                await self._execute_job(job_id, job_type, ref_id, {})
+            return [(j[0], j[1], j[2]) for j in jobs]
         finally:
             cursor.close()
             conn.close()
 
     async def _execute_job(self, job_id: str, job_type: str, ref_id: int, payload: dict):
         """Execute a single job with status updates."""
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        await asyncio.to_thread(self._set_job_running, job_id)
         try:
-            cursor.execute(
-                "UPDATE job_state SET status='running', started_at=NOW(), phase='processing', progress_pct=10 WHERE id=%s",
-                (job_id,)
-            )
-            conn.commit()
-
             await self.process_job(job_id, job_type, ref_id, payload)
-
-            cursor.execute(
-                "UPDATE job_state SET status='succeeded', finished_at=NOW(), phase='done', progress_pct=100 WHERE id=%s",
-                (job_id,)
-            )
-            conn.commit()
+            await asyncio.to_thread(self._set_job_succeeded, job_id)
             logger.info("Job %s (%s) completed for ref_id=%s", job_id, job_type, ref_id)
-
         except Exception as e:
             logger.error("Job %s (%s) failed for ref_id=%s: %s", job_id, job_type, ref_id, e, exc_info=True)
             try:
-                cursor.execute(
-                    "UPDATE job_state SET status='failed', finished_at=NOW(), phase='error', error_code=%s, logs_ref=%s WHERE id=%s",
-                    (type(e).__name__[:50], str(e)[:255], job_id)
-                )
-                conn.commit()
+                await asyncio.to_thread(self._set_job_failed, job_id, e)
             except Exception:
                 pass
+
+    @staticmethod
+    def _set_job_running(job_id: str) -> None:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE job_state SET status='running', started_at=NOW(), phase='processing', progress_pct=10 WHERE id=%s",
+                    (job_id,)
+                )
+            conn.commit()
         finally:
-            cursor.close()
+            conn.close()
+
+    @staticmethod
+    def _set_job_succeeded(job_id: str) -> None:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE job_state SET status='succeeded', finished_at=NOW(), phase='done', progress_pct=100 WHERE id=%s",
+                    (job_id,)
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _set_job_failed(job_id: str, error: Exception) -> None:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE job_state SET status='failed', finished_at=NOW(), phase='error', error_code=%s, logs_ref=%s WHERE id=%s",
+                    (type(error).__name__[:50], str(error)[:255], job_id)
+                )
+            conn.commit()
+        finally:
             conn.close()
 
     @abstractmethod

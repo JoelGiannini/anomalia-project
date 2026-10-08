@@ -76,29 +76,57 @@
         state: present
       no_log: true
 
-    - name: 8. Otorgar permisos de sudo y acceso al socket de contenedores
+    - name: 8. Otorgar permisos de sudo al usuario
       ansible.builtin.user:
         name: "{{ nombre_usuario }}"
-        groups: "{{ ('sudo' if ansible_os_family == 'Debian' else 'wheel') + ',docker' }}"
+        groups: "{{ 'sudo' if ansible_os_family == 'Debian' else 'wheel' }}"
         append: yes
+
+    # 8b. Topología flexible (spec 013): solo se añade al grupo 'docker' si el
+    # nodo detecta motor de contenedores y el grupo existe. En nodos que no
+    # ejecutan contenedores (p. ej. storage puro) se omite sin romper el deploy.
+    - name: 8b. Verificar existencia del grupo docker
+      ansible.builtin.getent:
+        database: group
+        key: docker
+      when: anomalia_container_engine in ['docker', 'podman']
+      changed_when: false
+
+    - name: 8c. Otorgar acceso al socket de contenedores si hay motor
+      ansible.builtin.user:
+        name: "{{ nombre_usuario }}"
+        groups: docker
+        append: yes
+      when:
+        - anomalia_container_engine in ['docker', 'podman']
+        - "'docker' in ansible_facts.getent_group"
   roles:
     - role: victorialogs
     - role: victoriametrics
     - role: victoriatraces
     - role: pyroscope
+      when: inventory_hostname in groups.get('pyroscope_nodes', [])
     - role: vmauth
+      when: inventory_hostname in groups.get('vmauth_nodes', [])
     - role: vmagent
+      when: inventory_hostname in groups.get('vmagent_nodes', [])
     - role: alertmanager
+      when: inventory_hostname in groups.get('alertmanager_nodes', [])
     - role: vmalert
+      vars:
+        vmalert_per_tenant: true
+      when: inventory_hostname in groups.get('vmalert_nodes', [])
     - role: victoria_firewall
       tags: ['firewall']
       when: inventory_hostname in groups.get('all_nodes', [])
     - role: certs
       tags: ['certs', 'backend']
       when: inventory_hostname in groups.get('backend_nodes', [])
-    - role: backend
-      tags: ['backend']
-      when: inventory_hostname in groups.get('backend_nodes', [])
+    # parses ANTES que backend (spec 008): el gateway provisiona Parses al arrancar,
+    # así que Perses debe estar levantado y listo antes de que arranque el contenedor.
     - role: parses
       tags: ['parses']
       when: inventory_hostname in groups.get('parses_nodes', [])
+    - role: backend
+      tags: ['backend']
+      when: inventory_hostname in groups.get('backend_nodes', [])

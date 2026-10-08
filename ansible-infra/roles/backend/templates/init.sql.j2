@@ -370,10 +370,14 @@ ON CONFLICT (name) DO UPDATE SET
 --                   se llama VictoriaTraces porque ese es el componente desplegado. No hay
 --                   ningun componente Jaeger en el stack. VictoriaTraces NO expone la API
 --                   de Tempo (/api/v2/...), por lo que el plugin Tempo de Perses no aplica.
-{% set vm_sel = hostvars[groups['vm_select_nodes'][0]] %}
-{% set vl_sel = hostvars[groups['vlogs_select_nodes'][0]] %}
-{% set vt_sel = hostvars[groups['vt_select_nodes'][0]] %}
-{% set pyro   = hostvars[groups['pyroscope_nodes'][0]] %}
+{% set vm_sel_nodes = groups.get('vm_select_nodes', []) %}
+{% set vl_sel_nodes = groups.get('vlogs_select_nodes', []) %}
+{% set vt_sel_nodes = groups.get('vt_select_nodes', []) %}
+{% set pyro_nodes = groups.get('pyroscope_nodes', []) %}
+{% set vm_sel = hostvars[vm_sel_nodes[0]] if vm_sel_nodes else {'vmselect_ip': '127.0.0.1', 'vmselect_port': '8401'} %}
+{% set vl_sel = hostvars[vl_sel_nodes[0]] if vl_sel_nodes else {'vlselect_ip': '127.0.0.1', 'vlselect_port': '8481'} %}
+{% set vt_sel = hostvars[vt_sel_nodes[0]] if vt_sel_nodes else {'vtselect_ip': '127.0.0.1', 'vtselect_port': '8491'} %}
+{% set pyro   = hostvars[pyro_nodes[0]] if pyro_nodes else {'pyroscope_ip': '127.0.0.1', 'pyroscope_port': '4040'} %}
 INSERT INTO tenant_datasources (tenant_id, kind, read_url, scoping, account_id, project_id, org_id, enabled)
 SELECT t.id, v.kind, v.read_url, v.scoping, v.account_id, v.project_id, v.org_id, TRUE
 FROM tenants t
@@ -557,7 +561,7 @@ CREATE TABLE IF NOT EXISTS user_devices (
     {'group': 'vmagent_nodes', 'type': 'vmagent', 'port_var': 'vmagent_port', 'ip_var': 'vmagent_ip', 'default_port': 8429, 'desc': 'Agente de recolección de métricas'},
     {'group': 'alertmanager_nodes', 'type': 'alertmanager', 'port_var': 'alertmanager_port', 'ip_var': 'alertmanager_ip', 'default_port': 9093, 'desc': 'Gestor de alertas Alertmanager'},
     {'group': 'vmalert_nodes', 'type': 'vmalert', 'port_var': 'vmalert_port', 'ip_var': 'vmalert_ip', 'default_port': 8880, 'desc': 'Evaluador de reglas Vmalert'},
-    {'group': 'backend_nodes', 'type': 'backend', 'port_var': 'backend_port', 'ip_var': 'backend_ip', 'default_port': 5000, 'desc': 'Servicio Backend de la aplicación'},
+    {'group': 'backend_nodes', 'type': 'backend', 'port_var': 'backend_port', 'ip_var': 'backend_ip', 'default_port': 8000, 'desc': 'Servicio Backend de la aplicación'},
     {'group': 'parses_nodes', 'type': 'parses', 'port_var': 'parses_port', 'ip_var': 'parses_ip', 'default_port': 8090, 'desc': 'Servicio Parses de datos'}
 ] %}
 

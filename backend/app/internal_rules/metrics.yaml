@@ -33,3 +33,19 @@ groups:
         annotations:
           summary: "Servicio de dashboards (Parses) caído"
           description: "Parses no responde al scraping de métricas."
+      - alert: PyroscopeDown
+        expr: up{job="pyroscope"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pyroscope caído"
+          description: "El servicio de profiling continuo no responde al scraping de métricas."
+      - alert: PyroscopeHeartbeatMissing
+        expr: absent(pyroscope_build_info)
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pyroscope sin métricas internas"
+          description: "No se reciben métricas propias de Pyroscope."
