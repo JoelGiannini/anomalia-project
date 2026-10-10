@@ -1,3 +1,7 @@
+# Receiver sin integraciones (solo consola): Alertmanager agrupa y muestra
+# las alertas en su UI pero no notifica por email ni webhook por ahora.
+# Reactivacion de notificaciones: ver spec 003 §1.2 (webhook con gap 401/301
+# pendiente) y el SMTP/email original.
 route:
   group_by:
     - alertname
@@ -13,16 +17,7 @@ route:
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 3h
-  receiver: 'email-y-webhook'
+  receiver: 'console'
 
 receivers:
-  - name: 'email-y-webhook'
-    email_configs:
-      - to: '{{ mail }}'
-        from: 'alerts@anomalia.local'
-        smarthost: '{{ smtp_server_ip }}:{{ smtp_server_port }}'
-        send_resolved: true
-        require_tls: false
-    webhook_configs:
-      - url: 'http://{{ backend_ip }}:8000/api/v1/webhook/alertmanager'
-        send_resolved: true
+  - name: 'console'

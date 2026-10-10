@@ -176,8 +176,10 @@ export const api = {
         const token = this.getToken();
         const params = new URLSearchParams();
         if (options.mine) params.set('mine', 'true');
+        if (options.waitDeployed) params.set('wait_deployed', 'true');
         const res = await fetch(`/api/v1/admin/alerts/tenants?${params.toString()}`, {
-            headers: { 'Authorization': `Bearer ${token}` }
+            headers: { 'Authorization': `Bearer ${token}` },
+            signal: options.signal
         });
         if (!res.ok) throw new Error('No se pudo obtener el listado de tenants de alertas');
         const data = await res.json();

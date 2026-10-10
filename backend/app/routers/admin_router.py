@@ -282,55 +282,92 @@ def get_vmalert_nodes():
 
 
 @router.get("/alerts/tenants", dependencies=[Depends(verify_profile_access("alerts_manager"))])
-def get_alerts_tenants(mine: bool = False, payload: dict = Depends(verify_any_user_token)):
+def get_alerts_tenants(mine: bool = False, wait_deployed: bool = False, payload: dict = Depends(verify_any_user_token)):
     """Listado minimo para la tarjeta de consolas de alertas.
 
     Solo lectura y con el perfil `alerts_manager`, que no tiene por que tener
     `tenants_manager`. No expone account_id ni project_id.
 
+    Excluye el tenant interno `profiles` (Pyroscope), que nunca tiene vmalert
+    (spec 011 §4.6/§4.9) pero nace con has_alerts=true por el seed interno.
+
     Si mine=True, filtra por tenants asignados al usuario actual (user_tenants + role_tenants).
+    Si wait_deployed=True, espera hasta que todos los tenants activos con alertas
+    esten deployed o hasta que expire el timeout (600s).
     """
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        username = payload.get("sub") or payload.get("username")
-        where_clause = "WHERE t.deleted_at IS NULL"
-        params = []
+    import time
 
-        if mine and username:
-            where_clause += """
-                AND t.id IN (
-                    SELECT ut.tenant_id FROM user_tenants ut JOIN users u ON u.id = ut.user_id WHERE u.username = %s
-                    UNION
-                    SELECT rt.tenant_id FROM role_tenants rt
-                    JOIN user_roles ur ON ur.role_id = rt.role_id
-                    JOIN users ru ON ru.id = ur.user_id
-                    WHERE ru.username = %s
-                )
-            """
-            params.extend([username, username])
+    username = payload.get("sub") or payload.get("username")
+    where_clause = "WHERE t.deleted_at IS NULL AND t.type <> 'profiles'"
+    params = []
 
-        cursor.execute(
-            f"""SELECT t.id, t.name, t.slug, t.org_id_upper, t.status, t.instance_id,
-                      t.vmalert_port, t.has_alerts,
-                      EXISTS (SELECT 1 FROM tenant_vmalert_instances i
-                              WHERE i.tenant_id = t.id AND i.status = 'deployed') AS deployed
-               FROM tenants t
-               {where_clause}
-               ORDER BY t.id ASC;""",
-            tuple(params)
-        )
-        rows = cursor.fetchall()
-        return {"tenants": [
-            {
-                "id": r[0], "name": r[1], "slug": r[2], "org_id_upper": r[3],
-                "status": r[4], "instance_id": r[5], "vmalert_port": r[6],
-                "has_alerts": r[7], "vmalert_deployed": r[8]
-            } for r in rows
-        ]}
-    finally:
-        cursor.close()
-        conn.close()
+    if mine and username:
+        where_clause += """
+            AND t.id IN (
+                SELECT ut.tenant_id FROM user_tenants ut JOIN users u ON u.id = ut.user_id WHERE u.username = %s
+                UNION
+                SELECT rt.tenant_id FROM role_tenants rt
+                JOIN user_roles ur ON ur.role_id = rt.role_id
+                JOIN users ru ON ru.id = ur.user_id
+                WHERE ru.username = %s
+            )
+        """
+        params.extend([username, username])
+
+    query_sql = (
+        f"""SELECT t.id, t.name, t.slug, t.org_id_upper, t.status, t.instance_id,
+                   t.vmalert_port, t.has_alerts,
+                   EXISTS (SELECT 1 FROM tenant_vmalert_instances i
+                           WHERE i.tenant_id = t.id AND i.status = 'deployed') AS deployed,
+                   j.status, j.phase, j.progress_pct
+            FROM tenants t
+            LEFT JOIN LATERAL (
+                SELECT status, phase, progress_pct
+                FROM job_state
+                WHERE ref_id = t.id
+                  AND type IN ('vmalert_deploy', 'vmalert_redeploy', 'vmalert_undeploy')
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) j ON TRUE
+            {where_clause}
+            ORDER BY t.id ASC;"""
+    )
+
+    def _fetch_rows():
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(query_sql, tuple(params))
+            return cursor.fetchall()
+        finally:
+            cursor.close()
+            conn.close()
+
+    def _has_pending(rows):
+        for r in rows:
+            is_active = r[4] == 'active'
+            has_alerts = r[7]
+            deployed = r[8]
+            if is_active and has_alerts and not deployed:
+                return True
+        return False
+
+    timeout_sec = 600
+    deadline = time.monotonic() + timeout_sec
+    rows = _fetch_rows()
+    while wait_deployed and _has_pending(rows) and time.monotonic() < deadline:
+        time.sleep(3)
+        rows = _fetch_rows()
+
+    return {"tenants": [
+        {
+            "id": r[0], "name": r[1], "slug": r[2], "org_id_upper": r[3],
+            "status": r[4], "instance_id": r[5], "vmalert_port": r[6],
+            "has_alerts": r[7], "vmalert_deployed": r[8],
+            "vmalert_job_status": r[9], "vmalert_job_phase": r[10],
+            "vmalert_job_progress": r[11]
+        } for r in rows
+    ]}
 
 @router.post("/tenants", dependencies=[Depends(verify_profile_access("tenants_manager"))])
 def create_tenant(payload: TenantPayload):

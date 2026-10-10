@@ -71,6 +71,51 @@ const CONSOLES = [
 // es una consola de tenants: su contenido es estático y no depende de asignaciones.
 const MANAGED_TABS = new Set(CONSOLES.map(cfg => cfg.tab).filter(Boolean));
 
+// Auto-refresh del listado de consolas de alertas (spec 011 §5.4): tras un
+// Controladores AbortController para las esperas únicas de la lista de alertas.
+const alertsConfigControllers = {};
+
+function cancelAlertsConfigWait(key) {
+    if (alertsConfigControllers[key]) {
+        alertsConfigControllers[key].abort();
+        delete alertsConfigControllers[key];
+    }
+}
+
+async function startAlertsConfigWait(key, mine, renderFn) {
+    cancelAlertsConfigWait(key);
+    const controller = new AbortController();
+    alertsConfigControllers[key] = controller;
+    try {
+        await api.fetchAlertsTenants({ mine, waitDeployed: true, signal: controller.signal });
+        renderFn();
+    } catch (err) {
+        if (err.name !== 'AbortError') {
+            console.error('Error en espera de despliegue de alertas:', err);
+        }
+    } finally {
+        if (alertsConfigControllers[key] === controller) {
+            delete alertsConfigControllers[key];
+        }
+    }
+}
+
+// Etiqueta del job vmalert más reciente del tenant (deploy/redeploy/undeploy).
+// Devuelve null si no hay job o si ya está en estado terminal.
+function alertsTenantJobLabel(tenant) {
+    const status = tenant.vmalert_job_status;
+    if (status === 'queued') return 'En cola de despliegue';
+    if (status === 'running') {
+        const parts = [];
+        if (tenant.vmalert_job_phase) parts.push(tenant.vmalert_job_phase);
+        if (typeof tenant.vmalert_job_progress === 'number') {
+            parts.push(`${tenant.vmalert_job_progress}%`);
+        }
+        return parts.length ? `Desplegando… ${parts.join(' · ')}` : 'Desplegando…';
+    }
+    return null;
+}
+
 function esc(value) {
     return String(value ?? '').replace(/[&<>"']/g, c => (
         { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
@@ -107,6 +152,10 @@ export const ui = {
     },
 
     switchTab(tabName) {
+        // Al cambiar de pestaña se cancela cualquier espera pendiente de la lista de
+        // alertas; si se entra a `alerts`, su render la reinicia si hace falta.
+        cancelAlertsConfigWait('alerts');
+
         // Si la pestaña pedida está gestionada por CONSOLES y quedó oculta (no hay
         // perfil o no hay tenant), se cae a la primera visible en lugar de dejar la
         // pantalla en blanco.
@@ -142,6 +191,7 @@ export const ui = {
     },
 
     switchAdminTab(adminTabName) {
+        cancelAlertsConfigWait('admin-alerts');
         document.querySelectorAll('.tab-view').forEach(el => el.classList.add('hidden'));
         document.getElementById('main-tabs-container')?.classList.add('hidden');
         
@@ -286,9 +336,12 @@ export const ui = {
     // Consolas de administración de alertas: vmalert por tenant y Alertmanager
     // global. Ambas exigen el perfil 'alerts_manager' (specs/011 §5.7), que el
     // backend vuelve a comprobar al emitir el ticket y en cada request del proxy.
-    async renderAlertsConfig() {
+    async renderAlertsConfig(options = {}) {
+        const autoWait = options.autoWait !== false;
         const container = document.getElementById('alerts-config-list');
         if (!container) return;
+
+        cancelAlertsConfigWait('alerts');
 
         const profiles = state.currentUserProfiles || [];
         if (!profiles.includes('alerts_manager')) {
@@ -301,21 +354,17 @@ export const ui = {
 
         let tenants = [];
         try {
-            // Endpoint gated por alerts_manager: no exige tenants_manager.
             tenants = await api.fetchAlertsTenants();
         } catch (err) {
             console.error('Error al cargar tenants para Alerts (conf):', err);
             container.innerHTML =
-                `<p class="text-xs text-red-400">No se pudo cargar el listado de tenants: ${err.message || err}</p>`;
+                `<p class="text-xs text-red-400">No se pudo cargar el listado de tenants: ${esc(err.message || err)}</p>`;
             return;
         }
 
-        // La consola vmalert solo existe si el backend puede resolver una
-        // instancia 'deployed' para ese tenant (vmalert_deployed); el botón de
-        // reglas no depende de eso, porque el archivo se puede preparar antes de
-        // desplegar la instancia.
         const withInstance = tenants.filter((t) => t.status === 'active' && t.vmalert_deployed);
         const withRules = tenants.filter((t) => t.status !== 'deleted_cleanup');
+        const needsWait = tenants.some(t => t.status === 'active' && t.has_alerts && !t.vmalert_deployed);
 
         let html = `
             <div class="dynamic-card border rounded-xl p-4 flex justify-between items-center">
@@ -329,7 +378,7 @@ export const ui = {
             </div>
         `;
 
-        if (withInstance.length === 0) {
+        if (withInstance.length === 0 && !needsWait) {
             html += `
                 <p class="text-xs opacity-75">
                     Ningun tenant tiene una instancia vmalert desplegada. Provisiona el tenant
@@ -340,28 +389,40 @@ export const ui = {
 
         for (const t of withRules) {
             const deployed = t.status === 'active' && t.vmalert_deployed;
+            const jobLabel = alertsTenantJobLabel(t);
+            let statusLine = '';
+            if (!deployed) {
+                const desc = jobLabel ? `${jobLabel} — se habilitará automáticamente.` : 'Pendiente de reconciliación — se habilitará automáticamente.';
+                statusLine = `
+                    <p class="text-xs opacity-75 mt-1">${esc(desc)}</p>
+                    <div class="w-full h-2 rounded-full overflow-hidden dynamic-card border mt-2">
+                        <div class="h-full w-1/2 dynamic-accent rounded-full animate-pulse"></div>
+                    </div>
+                `;
+            }
             html += `
                 <div class="dynamic-card border rounded-xl p-4 flex justify-between items-center">
                     <div>
-                        <h4 class="font-bold text-sm">${t.name}</h4>
+                        <h4 class="font-bold text-sm">${esc(t.name)}</h4>
                         <p class="text-xs opacity-75">
-                            slug: ${t.slug || '-'} | org: ${t.org_id_upper || '-'} |
-                            estado: ${t.status || '-'} |
-                            nodo: ${t.instance_id || '-'} | puerto: ${t.vmalert_port || '-'}
+                            slug: ${esc(t.slug || '-')} | org: ${esc(t.org_id_upper || '-')} |
+                            estado: ${esc(t.status || '-')} |
+                            nodo: ${esc(t.instance_id || '-')} | puerto: ${esc(t.vmalert_port || '-')}
                         </p>
+                        ${statusLine}
                     </div>
                     <div class="flex items-center space-x-2">
                         <button class="btn-vmalert-rules text-xs dynamic-card border px-2 py-1 rounded"
-                                data-tenant-id="${t.id}" data-tenant-slug="${t.slug || ''}"
-                                data-tenant-internal="${t.is_internal ? '1' : '0'}">
+                                data-tenant-id="${esc(t.id)}" data-tenant-slug="${esc(t.slug || '')}"
+                                data-tenant-internal="${esc(t.is_internal ? '1' : '0')}">
                             Reglas
                         </button>
                         <button class="btn-vmalert-reload text-xs dynamic-card border px-2 py-1 rounded"
-                                data-tenant-id="${t.id}" ${deployed ? '' : 'disabled title="Sin instancia desplegada"'}>
+                                data-tenant-id="${esc(t.id)}" ${deployed ? '' : 'disabled title="Sin instancia desplegada"'}>
                             Reload
                         </button>
                         <button class="btn-open-vmalert-tenant text-xs dynamic-card border px-2 py-1 rounded"
-                                data-tenant-id="${t.id}" ${deployed ? '' : 'disabled title="Sin instancia desplegada"'}>
+                                data-tenant-id="${esc(t.id)}" ${deployed ? '' : 'disabled title="Sin instancia desplegada"'}>
                             Abrir vmalert
                         </button>
                     </div>
@@ -369,7 +430,24 @@ export const ui = {
             `;
         }
 
+        if (needsWait) {
+            html += `
+                <div class="flex justify-between items-center pt-2">
+                    <p class="text-xs opacity-75"><i class="fa-solid fa-spinner fa-spin mr-1"></i> Esperando despliegue automático de instancias pendientes...</p>
+                    <button id="btn-retry-alerts-wait" class="text-xs dynamic-card border px-3 py-1.5 rounded">Reintentar</button>
+                </div>
+            `;
+        }
+
         container.innerHTML = html;
+
+        if (needsWait && autoWait) {
+            startAlertsConfigWait('alerts', false, () => this.renderAlertsConfig({ autoWait: false }));
+        }
+
+        document.getElementById('btn-retry-alerts-wait')?.addEventListener('click', () => {
+            this.renderAlertsConfig({ autoWait: true });
+        });
 
         document.getElementById('btn-open-alertmanager-global')?.addEventListener('click', async () => {
             try {
@@ -393,15 +471,14 @@ export const ui = {
                 }
             });
         });
-        // Los botones Reglas/Reload se wirean por delegacion en main.js, sobre el
-        // contenedor estatico #alerts-config-list (mismo patron que btn-edit-tenant).
     },
 
-    // Admin view version: usa ?mine=true para filtrar por tenants del usuario actual
-    // y renderiza en #admin-alerts-config-list
-    async renderAdminAlertsConfig() {
+    async renderAdminAlertsConfig(options = {}) {
+        const autoWait = options.autoWait !== false;
         const container = document.getElementById('admin-alerts-config-list');
         if (!container) return;
+
+        cancelAlertsConfigWait('admin-alerts');
 
         const profiles = state.currentUserProfiles || [];
         if (!profiles.includes('alerts_manager')) {
@@ -414,17 +491,17 @@ export const ui = {
 
         let tenants = [];
         try {
-            // Usar ?mine=true para filtrar por tenants del usuario actual
             tenants = await api.fetchAlertsTenants({ mine: true });
         } catch (err) {
             console.error('Error al cargar tenants para Admin Alerts (conf):', err);
             container.innerHTML =
-                `<p class="text-xs text-red-400">No se pudo cargar el listado de tenants: ${err.message || err}</p>`;
+                `<p class="text-xs text-red-400">No se pudo cargar el listado de tenants: ${esc(err.message || err)}</p>`;
             return;
         }
 
         const withInstance = tenants.filter((t) => t.status === 'active' && t.vmalert_deployed);
         const withRules = tenants.filter((t) => t.status !== 'deleted_cleanup');
+        const needsWait = tenants.some(t => t.status === 'active' && t.has_alerts && !t.vmalert_deployed);
 
         let html = `
             <div class="dynamic-card border rounded-xl p-4 flex justify-between items-center">
@@ -438,7 +515,7 @@ export const ui = {
             </div>
         `;
 
-        if (withInstance.length === 0) {
+        if (withInstance.length === 0 && !needsWait) {
             html += `
                 <p class="text-xs opacity-75">
                     Ningun tenant tiene una instancia vmalert desplegada. Provisiona el tenant
@@ -449,28 +526,40 @@ export const ui = {
 
         for (const t of withRules) {
             const deployed = t.status === 'active' && t.vmalert_deployed;
+            const jobLabel = alertsTenantJobLabel(t);
+            let statusLine = '';
+            if (!deployed) {
+                const desc = jobLabel ? `${jobLabel} — se habilitará automáticamente.` : 'Pendiente de reconciliación — se habilitará automáticamente.';
+                statusLine = `
+                    <p class="text-xs opacity-75 mt-1">${esc(desc)}</p>
+                    <div class="w-full h-2 rounded-full overflow-hidden dynamic-card border mt-2">
+                        <div class="h-full w-1/2 dynamic-accent rounded-full animate-pulse"></div>
+                    </div>
+                `;
+            }
             html += `
                 <div class="dynamic-card border rounded-xl p-4 flex justify-between items-center">
                     <div>
-                        <h4 class="font-bold text-sm">${t.name}</h4>
+                        <h4 class="font-bold text-sm">${esc(t.name)}</h4>
                         <p class="text-xs opacity-75">
-                            slug: ${t.slug || '-'} | org: ${t.org_id_upper || '-'} |
-                            estado: ${t.status || '-'} |
-                            nodo: ${t.instance_id || '-'} | puerto: ${t.vmalert_port || '-'}
+                            slug: ${esc(t.slug || '-')} | org: ${esc(t.org_id_upper || '-')} |
+                            estado: ${esc(t.status || '-')} |
+                            nodo: ${esc(t.instance_id || '-')} | puerto: ${esc(t.vmalert_port || '-')}
                         </p>
+                        ${statusLine}
                     </div>
                     <div class="flex items-center space-x-2">
                         <button class="btn-vmalert-rules-admin text-xs dynamic-card border px-2 py-1 rounded"
-                                data-tenant-id="${t.id}" data-tenant-slug="${t.slug || ''}"
-                                data-tenant-internal="${t.is_internal ? '1' : '0'}">
+                                data-tenant-id="${esc(t.id)}" data-tenant-slug="${esc(t.slug || '')}"
+                                data-tenant-internal="${esc(t.is_internal ? '1' : '0')}">
                             Reglas
                         </button>
                         <button class="btn-vmalert-reload-admin text-xs dynamic-card border px-2 py-1 rounded"
-                                data-tenant-id="${t.id}" ${deployed ? '' : 'disabled title="Sin instancia desplegada"'}>
+                                data-tenant-id="${esc(t.id)}" ${deployed ? '' : 'disabled title="Sin instancia desplegada"'}>
                             Reload
                         </button>
                         <button class="btn-open-vmalert-tenant-admin text-xs dynamic-card border px-2 py-1 rounded"
-                                data-tenant-id="${t.id}" ${deployed ? '' : 'disabled title="Sin instancia desplegada"'}>
+                                data-tenant-id="${esc(t.id)}" ${deployed ? '' : 'disabled title="Sin instancia desplegada"'}>
                             Abrir vmalert
                         </button>
                     </div>
@@ -478,7 +567,24 @@ export const ui = {
             `;
         }
 
+        if (needsWait) {
+            html += `
+                <div class="flex justify-between items-center pt-2">
+                    <p class="text-xs opacity-75"><i class="fa-solid fa-spinner fa-spin mr-1"></i> Esperando despliegue automático de instancias pendientes...</p>
+                    <button id="btn-retry-admin-alerts-wait" class="text-xs dynamic-card border px-3 py-1.5 rounded">Reintentar</button>
+                </div>
+            `;
+        }
+
         container.innerHTML = html;
+
+        if (needsWait && autoWait) {
+            startAlertsConfigWait('admin-alerts', true, () => this.renderAdminAlertsConfig({ autoWait: false }));
+        }
+
+        document.getElementById('btn-retry-admin-alerts-wait')?.addEventListener('click', () => {
+            this.renderAdminAlertsConfig({ autoWait: true });
+        });
 
         document.getElementById('btn-open-alertmanager-global-admin')?.addEventListener('click', async () => {
             try {
@@ -502,6 +608,5 @@ export const ui = {
                 }
             });
         });
-        // Los botones Reglas/Reload admin se wirean por delegacion en main.js
     }
 };

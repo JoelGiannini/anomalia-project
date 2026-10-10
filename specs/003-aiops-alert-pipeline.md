@@ -2,9 +2,9 @@
 
 ## 1. Flujo de Alertas
 1. **Evaluación:** `vmalert` evalúa las reglas de métricas del tenant y dispara la alerta hacia `Alertmanager`.
-2. **Webhook:** `Alertmanager` despacha el payload de la alerta mediante un webhook HTTP POST hacia el **Backend FastAPI**.
-3. **Análisis IA:** El backend procesa la alerta, extrae el contexto y consulta al proveedor de IA configurado para obtener un diagnóstico de causa raíz y posibles soluciones.
-4. **Distribución:** La alerta enriquecida se almacena y se transmite en tiempo real hacia la interfaz Web y la aplicación móvil Android para notificar al usuario.
+2. **Webhook (DESHABILITADO):** el flujo AM → Backend está **apagado por decisión operativa**: el receiver global de Alertmanager es `console` (sin integraciones: ni `email_configs` ni `webhook_configs`), por lo que las alertas solo se consultan en la consola de Alertmanager. El SMTP/email se retiró del template `alertmanager.yml.j2` y sus vars (`mail`, `smtp_server_ip`, `smtp_server_port`) del inventario. **Pendiente de reactivar** con los dos fixes ya diagnosticados: (a) el endpoint `POST /api/v1/webhook/alertmanager` exige JWT admin (`verify_admin_token`) y AM no envía Authorization → `401`; (b) `FORCE_HTTPS=true` redirige con `301` el Host de AM (`192.168.1.27:8000`) y AM no sigue TLS autofirmado → hace falta exención de path en `enforce_https_redirect` (`backend/app/main.py`) y un token compartido AM↔backend (`http_config.bearer_token` en AM + env en el compose del backend). Hasta entonces, los pasos 3 y 4 no se ejecutan y `alert_history` queda vacío (no hay lector de esa tabla).
+3. **Análisis IA:** El backend procesa la alerta, extrae el contexto y consulta al proveedor de IA configurado para obtener un diagnóstico de causa raíz y posibles soluciones. *(En pausa mientras el paso 2 esté deshabilitado.)*
+4. **Distribución:** La alerta enriquecida se almacena y se transmite en tiempo real hacia la interfaz Web y la aplicación móvil Android para notificar al usuario. *(En pausa: además del paso 2, falta el feed de `alert_history` en la UI y el despacho push móvil.)*
 
 ## 2. Catálogo y Selección de Proveedores IA
 
