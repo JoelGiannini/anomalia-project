@@ -22,6 +22,7 @@ Bienvenido a la documentación técnica oficial de **Anomalia**, la plataforma m
 ## 🏗️ Arquitectura General del Sistema
 
 ```mermaid
+
 graph TD
     subgraph Client ["Clientes y Consolas"]
         Web[Panel Web Vanilla JS]
