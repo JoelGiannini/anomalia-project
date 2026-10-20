@@ -22,7 +22,6 @@ Bienvenido a la documentación técnica oficial de **Anomalia**, la plataforma m
 ## 🏗️ Arquitectura General del Sistema
 
 ```mermaid
-
 graph TD
     subgraph Client ["Clientes y Consolas"]
         Web[Panel Web Vanilla JS]
@@ -35,9 +34,9 @@ graph TD
 
     subgraph Backend ["Backend FastAPI & Workers"]
         API[FastAPI Core & Routers]
-        TW[TenantWorker (30s)]
-        VW[VmalertWorker (30s)]
-        AI[AI Chat Engine (Strict Contexts)]
+        TW["TenantWorker (30s)"]
+        VW["VmalertWorker (30s)"]
+        AI["AI Chat Engine (Strict Contexts)"]
     end
 
     subgraph DB ["Base de Datos PostgreSQL (SSOT)"]
