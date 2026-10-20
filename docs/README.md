@@ -28,7 +28,7 @@ graph TD
         App[App Móvil Flutter]
     end
 
-    subgraph Gateway ["Gateway HTTPS / Nginx (Port 443)"]
+    subgraph Gateway ["Gateway HTTPS (Port 443)"]
         GW[Anomalia Gateway TLS]
     end
 
