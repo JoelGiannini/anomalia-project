@@ -49,8 +49,8 @@ graph TD
         AM[Alertmanager]
     end
 
-    Web -->|JWT / HTTPS| GW
-    App -->|OIDC Token| GW
+    Web -->|JWT / HTTPS / OIDC| GW
+    App -->|JWT / HTTPS / OIDC| GW
     GW --> API
     API --> PG
     TW -->|Provision Tenants & Parses| PG
