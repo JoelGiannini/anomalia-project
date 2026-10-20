@@ -45,7 +45,7 @@ graph TD
 
     subgraph Infra ["Nodos de Infraestructura (Ansible)"]
         VMA[vmagent]
-        VMAlert[vmalert per-tenant (1:1)]
+        VMAlert["vmalert per-tenant (1:1)"]
         AM[Alertmanager]
     end
 
