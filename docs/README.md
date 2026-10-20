@@ -32,7 +32,7 @@ graph TD
         GW[Anomalia Gateway TLS]
     end
 
-    subgraph Backend ["Backend FastAPI & Workers"]
+    subgraph Backend ["Backend FastAPI y Workers"]
         API[FastAPI Core & Routers]
         TW["TenantWorker (30s)"]
         VW["VmalertWorker (30s)"]
